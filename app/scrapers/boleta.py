@@ -38,8 +38,8 @@ PAGINA_INFO_RE = re.compile(r"p[aá]gina\s+(\d+)\s+de\s+(\d+)", re.I)
 REINTENTOS_ERROR_SII_DEF = 3
 REINTENTOS_CLICK_DEF = 3
 BACKOFF_BASE_MS_DEF = 700
-VISTA_MENSUAL_TIMEOUT_MS_DEF = 18000
-PLANILLA_DOWNLOAD_TIMEOUT_MS_DEF = 20000
+VISTA_MENSUAL_TIMEOUT_MS_DEF = 30000
+PLANILLA_DOWNLOAD_TIMEOUT_MS_DEF = 30000
 PLANILLA_REINTENTOS_DEF = 2
 
 
@@ -280,17 +280,17 @@ def esperar_vista_mensual_lista(page, timeout_ms: int = VISTA_MENSUAL_TIMEOUT_MS
     while (time.time() - start) * 1000 < timeout_ms:
         try:
             planilla = obtener_locator_planilla(page)
-            if planilla.count() > 0 and planilla.is_visible() and planilla.is_enabled():
+            if planilla.is_visible() and planilla.is_enabled():
                 return planilla
         except Exception:
             pass
 
         ultimo_estado = describir_estado_mensual(page)
         try:
-            page.wait_for_load_state("networkidle", timeout=1200)
+            page.wait_for_load_state("networkidle", timeout=2000)
         except Exception:
             pass
-        page.wait_for_timeout(350)
+        page.wait_for_timeout(300)
 
     raise RuntimeError(
         "La vista mensual no quedo lista para descargar la planilla. "
@@ -331,7 +331,7 @@ def ir_a_pagina_siguiente_mensual(
 
         try:
             planilla = esperar_vista_mensual_lista(page, timeout_ms=2000)
-            planilla_lista = planilla.count() > 0 and planilla.is_visible() and planilla.is_enabled()
+            planilla_lista = planilla.is_visible() and planilla.is_enabled()
         except Exception:
             planilla_lista = False
 
@@ -873,7 +873,7 @@ def hacer_login(page, rut: str, dv: Optional[str], clave: str,
         page.wait_for_load_state("networkidle", timeout=10000)
     except:
         pass
-    page.wait_for_timeout(2000)  # Esperar 2 segundos adicionales
+    page.wait_for_timeout(500)
     
     forzar_formato_rut(page, rut, dv)
     page.locator("#clave, input[type='password']").first.fill(clave)
@@ -937,7 +937,7 @@ def intentar_setear_fecha(page, fecha: Optional[str]) -> None:
         ]
         for b in btns:
             try:
-                if b and b.count() >= 0:
+                if b and b.count() > 0 and b.is_visible():
                     b.click(timeout=3000)
                     page.wait_for_timeout(800)
                     break
@@ -1115,36 +1115,6 @@ def abrir_mensual_y_descargar(page, out_xls: Path, out_csv: Path,
         pdf_dir=pdf_dir,
         descargar_pdfs=descargar_pdfs,
     )
-
-    log("Esperando descarga de 'Planilla'…")
-    download = esperar_y_disparar_descarga_planilla(
-        page,
-        retries_click=retries_click,
-        backoff_base_ms=backoff_base_ms,
-        diag_dir=diag_dir,
-    )
-
-    out_xls.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        out_xls.unlink(missing_ok=True)
-    except Exception:
-        pass
-
-    failure = download.failure()
-    if failure:
-        raise RuntimeError(f"Fallo en descarga: {failure}")
-
-    download.save_as(out_xls)
-    log(f"Descarga OK: {download.suggested_filename} → {out_xls}")
-
-    result = ResultDescarga(archivo_xls=out_xls, archivo_csv=out_csv)
-    try:
-        modo = convertir_a_csv(out_xls, out_csv)
-        result.modo_conversion = modo
-        log(f"Convertido a CSV ({modo}): {out_csv}")
-    except Exception as e:
-        log(f"No se pudo convertir a CSV: {e}")
-    return result
 
 
 def run(playwright: Playwright,
