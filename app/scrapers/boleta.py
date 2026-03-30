@@ -34,6 +34,14 @@ ROW_MENSUAL_RE = re.compile(r"Mensual de Boletas de", re.I)
 PAGINA_SIGUIENTE_RE = re.compile(r"p[aá]gina\s+siguiente", re.I)
 PAGINA_INFO_RE = re.compile(r"p[aá]gina\s+(\d+)\s+de\s+(\d+)", re.I)
 
+# CSS selector directo para el boton Planilla (sin get_by_role)
+PLANILLA_CSS_SELECTOR = (
+    'input[type="button"][value*="lanilla" i], '
+    'input[type="submit"][value*="lanilla" i], '
+    'button:has-text("lanilla"), '
+    'a:has-text("lanilla")'
+)
+
 # ========= Reintentos / backoff =========
 REINTENTOS_ERROR_SII_DEF = 3
 REINTENTOS_CLICK_DEF = 3
@@ -152,22 +160,24 @@ def safe_click(locator, descripcion: str, retries: int, backoff_base_ms: int) ->
     raise RuntimeError(f"No se pudo hacer click en {descripcion}")
 
 
-def obtener_locator_planilla(page):
+def obtener_locator_planilla(page, frame=None):
+    target = frame or page
     candidatos = [
-        page.get_by_role("button", name=PLANILLA_TEXT_RE),
-        page.locator('button:has-text("Planilla")'),
-        page.locator('input[type="button"][value*="Planilla" i], input[type="submit"][value*="Planilla" i]'),
-        page.locator('a:has-text("Planilla")'),
+        ("role_button", target.get_by_role("button", name=PLANILLA_TEXT_RE)),
+        ("button_has_text", target.locator('button:has-text("Planilla")')),
+        ("input_button", target.locator('input[type="button"][value*="Planilla" i], input[type="submit"][value*="Planilla" i]')),
+        ("a_has_text", target.locator('a:has-text("Planilla")')),
     ]
 
-    for locator in candidatos:
+    for nombre, locator in candidatos:
         try:
-            if locator.count() > 0:
+            c = locator.count()
+            if c > 0:
                 return locator.first
         except Exception:
             pass
 
-    return candidatos[0].first
+    return candidatos[0][1].first
 
 
 def obtener_locator_pagina_siguiente(page):
@@ -241,14 +251,26 @@ def describir_estado_mensual(page) -> str:
         partes.append("filas_reporte=?")
 
     try:
-        planilla = obtener_locator_planilla(page)
-        visible = planilla.is_visible()
-        enabled = planilla.is_enabled() if visible else False
-        partes.append(f"planilla_visible={visible}")
-        partes.append(f"planilla_enabled={enabled}")
-    except Exception:
-        partes.append("planilla_visible=False")
-        partes.append("planilla_enabled=False")
+        # Usar CSS directo para diagnostico consistente
+        css_loc = page.locator(PLANILLA_CSS_SELECTOR)
+        css_count = css_loc.count()
+        partes.append(f"planilla_css_count={css_count}")
+        if css_count > 0:
+            visible = css_loc.first.is_visible()
+            enabled = css_loc.first.is_enabled() if visible else False
+            partes.append(f"planilla_visible={visible}")
+            partes.append(f"planilla_enabled={enabled}")
+        else:
+            # Fallback a obtener_locator_planilla
+            planilla = obtener_locator_planilla(page)
+            visible = planilla.is_visible()
+            enabled = planilla.is_enabled() if visible else False
+            partes.append(f"planilla_visible={visible}")
+            partes.append(f"planilla_enabled={enabled}")
+    except Exception as e:
+        partes.append(f"planilla_visible=False")
+        partes.append(f"planilla_enabled=False")
+        partes.append(f"planilla_error={type(e).__name__}")
 
     return ", ".join(partes)
 
@@ -273,17 +295,67 @@ def obtener_clave_primera_fila_mensual(page) -> str:
         return ""
 
 
+def _buscar_planilla_en_frames(page):
+    """Busca el boton Planilla en todos los frames de la pagina."""
+    for frame in page.frames:
+        try:
+            planilla = obtener_locator_planilla(page, frame=frame)
+            if planilla.is_visible() and planilla.is_enabled():
+                frame_name = frame.name or frame.url
+                log(f"Planilla encontrada en frame: {frame_name}")
+                return planilla
+        except Exception:
+            continue
+    return None
+
+
 def esperar_vista_mensual_lista(page, timeout_ms: int = VISTA_MENSUAL_TIMEOUT_MS_DEF):
     start = time.time()
     ultimo_estado = describir_estado_mensual(page)
 
+    # Estrategia 1: wait_for_selector directo con CSS (mas confiable que polling)
+    try:
+        handle = page.wait_for_selector(
+            PLANILLA_CSS_SELECTOR,
+            state="visible",
+            timeout=min(timeout_ms, 15000),
+        )
+        if handle:
+            log("Planilla detectada via wait_for_selector CSS directo")
+            locator = page.locator(PLANILLA_CSS_SELECTOR).first
+            if locator.is_enabled():
+                return locator
+            log("Planilla visible pero no enabled, continuando polling...")
+    except Exception as e:
+        log(f"wait_for_selector CSS no encontro Planilla: {e}")
+
+    # Estrategia 2: buscar en frames (sitios SII usan framesets)
+    try:
+        planilla_frame = _buscar_planilla_en_frames(page)
+        if planilla_frame:
+            return planilla_frame
+    except Exception as e:
+        log(f"Busqueda en frames fallo: {e}")
+
+    elapsed = (time.time() - start) * 1000
+    remaining = timeout_ms - elapsed
+
+    # Estrategia 3: polling con logging detallado
+    intentos = 0
     while (time.time() - start) * 1000 < timeout_ms:
+        intentos += 1
         try:
             planilla = obtener_locator_planilla(page)
-            if planilla.is_visible() and planilla.is_enabled():
+            vis = planilla.is_visible()
+            ena = planilla.is_enabled() if vis else False
+            if vis and ena:
+                log(f"Planilla detectada en polling intento {intentos}")
                 return planilla
-        except Exception:
-            pass
+            if intentos <= 3 or intentos % 20 == 0:
+                log(f"Planilla polling #{intentos}: visible={vis}, enabled={ena}")
+        except Exception as e:
+            if intentos <= 3 or intentos % 20 == 0:
+                log(f"Planilla polling #{intentos}: excepcion={type(e).__name__}: {e}")
 
         ultimo_estado = describir_estado_mensual(page)
         try:
