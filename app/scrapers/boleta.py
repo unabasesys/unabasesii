@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 import unicodedata
-from typing import Tuple, List
+from typing import Set, Tuple, List
 import requests
 from datetime import datetime
 
@@ -53,6 +53,35 @@ PLANILLA_REINTENTOS_DEF = 2
 
 
 SAVE_PDF_URL = "https://frank.unabase.com/node/savePdfBoleta"
+
+BOLETA_PDF_CACHE_DIR = Path("downloads") / "_cache"
+BOLETA_PDF_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _boleta_cache_path(hostname: str) -> Path:
+    safe_host = re.sub(r"[^\w\-]", "_", (hostname or "sin_hostname").strip()) or "sin_hostname"
+    return BOLETA_PDF_CACHE_DIR / f"boletas_descargadas_{safe_host}.json"
+
+
+def load_boleta_pdf_cache(hostname: str) -> Set[str]:
+    path = _boleta_cache_path(hostname)
+    if not path.exists():
+        return set()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return set(data) if isinstance(data, list) else set()
+    except Exception as exc:
+        log(f"No se pudo leer cache de boletas descargadas {path}: {exc}")
+        return set()
+
+
+def save_boleta_pdf_cache(hostname: str, cache: Set[str]) -> None:
+    path = _boleta_cache_path(hostname)
+    try:
+        path.write_text(json.dumps(sorted(cache), ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as exc:
+        log(f"No se pudo guardar cache de boletas descargadas {path}: {exc}")
+
 
 def enviar_pdf_a_api(download, nombre_archivo: str, hostname: Optional[str], session: requests.Session) -> bool:
     try:
@@ -840,6 +869,7 @@ def _descargar_pdfs_boletas_pagina(
     session: Optional[requests.Session] = None,
     hostname: Optional[str] = None,
     guardar_local: bool = False,
+    downloaded_cache: Optional[Set[str]] = None,
 ) -> int:
     carpeta_destino.mkdir(parents=True, exist_ok=True)
 
@@ -884,8 +914,15 @@ def _descargar_pdfs_boletas_pagina(
             nombre_archivo = _sanitize_filename(f"boleta_{folio}_{estado}_{rut_norm}.pdf")
             ruta_salida = carpeta_destino / nombre_archivo
 
+            # Verificar en cache si ya fue descargado previamente
+            if downloaded_cache is not None and nombre_archivo in downloaded_cache:
+                log(f"Cache: ya descargado previamente → salto: {nombre_archivo}")
+                continue
+
             if guardar_local and ruta_salida.exists():
                 log(f"Ya existe: {ruta_salida.name} → salto.")
+                if downloaded_cache is not None:
+                    downloaded_cache.add(nombre_archivo)
                 continue
 
             log(f"Descargando PDF fila {i+1}: {nombre_archivo}")
@@ -918,6 +955,8 @@ def _descargar_pdfs_boletas_pagina(
 
             if exito:
                 descargados += 1
+                if downloaded_cache is not None:
+                    downloaded_cache.add(nombre_archivo)
 
         except Exception as e:
             log(f"Error en descarga de PDF (fila {i+1}): {e}")
@@ -940,6 +979,11 @@ def descargar_pdfs_boletas(
     total_descargados = 0
     paginas_visitadas = 0
 
+    # Cargar cache de boletas ya descargadas
+    cache_key = hostname or "default"
+    downloaded_cache = load_boleta_pdf_cache(cache_key)
+    log(f"[CACHE] Cache boletas cargada para '{cache_key}': {len(downloaded_cache)} PDFs previamente descargados")
+
     while True:
         paginas_visitadas += 1
         pagina_actual, total_paginas = obtener_info_paginacion_mensual(page)
@@ -961,6 +1005,7 @@ def descargar_pdfs_boletas(
             session=session,
             hostname=hostname,
             guardar_local=guardar_local,
+            downloaded_cache=downloaded_cache,
         )
 
         if not paginar:
@@ -971,6 +1016,10 @@ def descargar_pdfs_boletas(
 
         if not ir_a_pagina_siguiente_mensual(page, retries_click, backoff_base_ms):
             break
+
+    # Guardar cache actualizada
+    save_boleta_pdf_cache(cache_key, downloaded_cache)
+    log(f"[CACHE] Cache boletas actualizada para '{cache_key}': {len(downloaded_cache)} PDFs totales registrados")
 
     return total_descargados
 
@@ -1083,10 +1132,16 @@ def _abrir_mensual_y_descargar_paginado(
     descargar_pdfs: bool = False,
 ) -> ResultDescarga:
     destino_pdfs = None
+    downloaded_cache: Optional[Set[str]] = None
     if descargar_pdfs:
         destino_pdfs = Path(pdf_dir) if pdf_dir else (out_xls.parent / (hostname or "default") / "boletas")
         destino_pdfs.mkdir(parents=True, exist_ok=True)
         log(f"Descargando PDFs a: {destino_pdfs}")
+
+        # Cargar cache de boletas ya descargadas
+        cache_key = hostname or "default"
+        downloaded_cache = load_boleta_pdf_cache(cache_key)
+        log(f"[CACHE] Cache boletas cargada para '{cache_key}': {len(downloaded_cache)} PDFs previamente descargados")
 
     diag_planillas_dir = diag_dir / "planillas_paginas"
     diag_planillas_dir.mkdir(parents=True, exist_ok=True)
@@ -1161,6 +1216,7 @@ def _abrir_mensual_y_descargar_paginado(
                 session=session,
                 hostname=hostname,
                 guardar_local=False,
+                downloaded_cache=downloaded_cache,
             )
             pdfs_descargados += enviados_pagina
             log(f"Pagina {pagina_log}: PDFs procesados={enviados_pagina}")
@@ -1169,6 +1225,12 @@ def _abrir_mensual_y_descargar_paginado(
 
         if not ir_a_pagina_siguiente_mensual(page, retries_click, backoff_base_ms):
             break
+
+    # Guardar cache actualizada
+    if descargar_pdfs and downloaded_cache is not None:
+        cache_key = hostname or "default"
+        save_boleta_pdf_cache(cache_key, downloaded_cache)
+        log(f"[CACHE] Cache boletas actualizada para '{cache_key}': {len(downloaded_cache)} PDFs totales registrados")
 
     if info_line is None or grupos_line is None or header_line is None or headers is None:
         raise RuntimeError("No se pudo reconstruir el contenido de la planilla de boletas.")
