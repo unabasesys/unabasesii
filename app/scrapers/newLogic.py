@@ -648,6 +648,25 @@ def _fill_and_submit_login(page, rut_usuario: str, clave_usuario: str, max_attem
     raise RuntimeError("No se pudo completar login SII tras varios intentos")
 
 
+def _try_click_continuar(page) -> bool:
+    """Intenta detectar y clickear un boton 'Continuar' en pantallas intermedias post-login."""
+    try:
+        continuar = page.locator(
+            "a[href*='siihome.cgi']:has-text('Continuar'), "
+            "a.btn-primary:has-text('Continuar'), "
+            "button:has-text('Continuar'), "
+            "input[value*='Continuar' i]"
+        ).first
+        if continuar.is_visible():
+            logger.info("[LOGIN] Pantalla intermedia detectada. Clickeando 'Continuar'...")
+            continuar.click()
+            time.sleep(2)
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def _wait_for_login_complete(page, timeout: int = 30_000) -> bool:
     """Espera a que la pagina salga del login y permanezca fuera de esa vista."""
     deadline = time.time() + (timeout / 1000)
@@ -658,6 +677,9 @@ def _wait_for_login_complete(page, timeout: int = 30_000) -> bool:
             raise RuntimeError(
                 "Firefox/Playwright bloqueo la pagina del SII por un problema HTTPS/certificado"
             )
+
+        # Detectar y saltar pantallas intermedias con boton "Continuar"
+        _try_click_continuar(page)
 
         if not _is_login_page(page):
             try:
@@ -1109,13 +1131,61 @@ def _log_document_snapshot_debug(page_num: int, row_snapshots: list[Dict[str, An
     )
 
 
+def _get_datatables_page_info(page) -> tuple[Optional[int], Optional[int]]:
+    """Extrae pagina actual y total de paginas del componente DataTables."""
+    try:
+        info = page.evaluate("""() => {
+            // DataTables muestra info como "Showing 1 to 10 of 25 entries" o similar
+            const info = document.querySelector('#tablaDatos_info');
+            if (!info) return null;
+            const text = info.textContent || '';
+            // Intentar extraer total de registros
+            const m = text.match(/(\\d+)\\s+de\\s+(\\d+)/i) || text.match(/of\\s+(\\d+)/i);
+
+            // Detectar pagina activa
+            const activePage = document.querySelector('#tablaDatos_paginate .paginate_button.current, #tablaDatos_paginate .paginate_active');
+            const currentPage = activePage ? parseInt(activePage.textContent) : null;
+
+            // Contar total de paginas por botones numericos
+            const pageButtons = document.querySelectorAll('#tablaDatos_paginate .paginate_button:not(.previous):not(.next):not(.first):not(.last):not(#tablaDatos_previous):not(#tablaDatos_next):not(#tablaDatos_first):not(#tablaDatos_last)');
+            const totalPages = pageButtons.length || null;
+
+            return { currentPage, totalPages };
+        }""")
+        if info:
+            return info.get("currentPage"), info.get("totalPages")
+    except Exception as exc:
+        logger.debug("No se pudo obtener info de paginacion DataTables: %s", exc)
+    return None, None
+
+
 def obtener_documentos(page) -> list[Dict[str, str]]:
     documentos: list[Dict[str, str]] = []
     page_num = 1
     visited_pages: set[str] = set()
+    max_pages = 100  # limite de seguridad
 
-    while True:
+    while page_num <= max_pages:
         logger.info("Leyendo pagina %s de documentos recibidos", page_num)
+
+        # Obtener info de paginacion para logging
+        dt_current, dt_total = _get_datatables_page_info(page)
+        if dt_current or dt_total:
+            logger.info(
+                "DataTables pagina actual=%s total_paginas=%s",
+                dt_current or "?",
+                dt_total or "?",
+            )
+
+        # Capturar contenido de la primera fila antes del cambio de pagina (para verificar cambios)
+        first_row_text = ""
+        try:
+            first_row = page.query_selector("#tablaDatos tbody tr:first-child")
+            if first_row:
+                first_row_text = (first_row.inner_text() or "").strip()[:200]
+        except Exception:
+            pass
+
         row_snapshots = _collect_document_rows(page)
         page_documents = 0
 
@@ -1140,11 +1210,13 @@ def obtener_documentos(page) -> list[Dict[str, str]]:
         if row_snapshots and page_documents == 0:
             _log_document_snapshot_debug(page_num, row_snapshots)
 
+        # --- Estrategia 1: link #pagina_siguiente (paginacion server-side) ---
         next_link = page.query_selector("#pagina_siguiente[href]")
         if next_link:
             next_href = next_link.get_attribute("href") or ""
             next_url = abs_url(next_href) if next_href else ""
             if not next_url or next_url in visited_pages:
+                logger.info("No hay mas paginas (link ya visitado o vacio)")
                 break
 
             visited_pages.add(next_url)
@@ -1154,14 +1226,50 @@ def obtener_documentos(page) -> list[Dict[str, str]]:
             page_num += 1
             continue
 
+        # --- Estrategia 2: boton DataTables #tablaDatos_next (paginacion client-side) ---
         next_btn = page.query_selector("#tablaDatos_next:not(.disabled)")
         if not next_btn:
+            logger.info("No hay mas paginas (boton next deshabilitado o no existe)")
             break
 
+        logger.info("Clickeando boton next de DataTables para ir a pagina %s", page_num + 1)
         next_btn.click()
-        page.wait_for_selector("#tablaDatos tbody tr", timeout=30_000)
+
+        # Esperar a que la tabla se actualice verificando que el contenido cambie
+        try:
+            page.wait_for_selector("#tablaDatos tbody tr td", timeout=30_000)
+        except PlaywrightTimeoutError:
+            logger.warning("Timeout esperando datos en tabla despues de click next")
+            break
+
+        # Esperar a que el contenido de la tabla realmente cambie
+        if first_row_text:
+            deadline = time.time() + 5
+            content_changed = False
+            while time.time() < deadline:
+                try:
+                    new_first_row = page.query_selector("#tablaDatos tbody tr:first-child")
+                    if new_first_row:
+                        new_text = (new_first_row.inner_text() or "").strip()[:200]
+                        if new_text != first_row_text:
+                            content_changed = True
+                            break
+                except Exception:
+                    pass
+                time.sleep(0.3)
+
+            if not content_changed:
+                logger.warning(
+                    "El contenido de la tabla no cambio despues de click next. "
+                    "Posible ultima pagina alcanzada."
+                )
+                break
+
         time.sleep(PAGE_SETTLE_SLEEP_S)
         page_num += 1
+
+    if page_num > max_pages:
+        logger.warning("Se alcanzo el limite de seguridad de %s paginas", max_pages)
 
     logger.info("Total documentos encontrados para compras PDF: %s", len(documentos))
     return documentos

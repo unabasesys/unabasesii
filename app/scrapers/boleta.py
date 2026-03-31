@@ -185,12 +185,21 @@ def obtener_locator_pagina_siguiente(page):
         page.get_by_role("button", name=PAGINA_SIGUIENTE_RE),
         page.locator('input[type="button"][value*="Siguiente" i], input[type="submit"][value*="Siguiente" i]'),
         page.locator('input[name="opcion3"]'),
+        page.locator('a:has-text("Siguiente"), a:has-text("siguiente")'),
+        page.locator('button:has-text("Siguiente"), button:has-text("siguiente")'),
+        page.locator('[onclick*="siguiente" i]'),
     ]
 
     for locator in candidatos:
         try:
             if locator.count() > 0:
-                return locator.first
+                first = locator.first
+                # Verificar que sea visible y habilitado
+                try:
+                    if first.is_visible() and first.is_enabled():
+                        return first
+                except Exception:
+                    return first
         except Exception:
             pass
 
@@ -201,6 +210,7 @@ def obtener_info_paginacion_mensual(page) -> Tuple[Optional[int], Optional[int]]
     actual = None
     total = None
 
+    # Estrategia 1: input hidden pagina_solicitada
     try:
         pagina_solicitada = page.locator('input[name="pagina_solicitada"]').first
         if pagina_solicitada.count() > 0:
@@ -210,6 +220,7 @@ def obtener_info_paginacion_mensual(page) -> Tuple[Optional[int], Optional[int]]
     except Exception:
         pass
 
+    # Estrategia 2: input hidden pagina_actual
     if actual is None:
         try:
             pagina_actual = page.locator('input[name="pagina_actual"]').first
@@ -220,6 +231,7 @@ def obtener_info_paginacion_mensual(page) -> Tuple[Optional[int], Optional[int]]
         except Exception:
             pass
 
+    # Estrategia 3: texto "página X de Y" en la pagina
     try:
         texto = page.get_by_text(PAGINA_INFO_RE, exact=False).first.inner_text()
         match = PAGINA_INFO_RE.search(texto or "")
@@ -228,6 +240,25 @@ def obtener_info_paginacion_mensual(page) -> Tuple[Optional[int], Optional[int]]
             total = int(match.group(2))
     except Exception:
         pass
+
+    # Estrategia 4: buscar en todo el body con JS si las anteriores fallaron
+    if actual is None or total is None:
+        try:
+            info = page.evaluate("""() => {
+                const body = document.body.innerText || '';
+                // Buscar "página X de Y" o "Pagina X de Y"
+                const m = body.match(/[Pp][aá]gina\\s+(\\d+)\\s+de\\s+(\\d+)/);
+                if (m) return { actual: parseInt(m[1]), total: parseInt(m[2]) };
+                // Buscar "Pag. X de Y" o "Pag X/Y"
+                const m2 = body.match(/[Pp]ag\\.?\\s*(\\d+)\\s*(?:de|\\/)\\s*(\\d+)/);
+                if (m2) return { actual: parseInt(m2[1]), total: parseInt(m2[2]) };
+                return null;
+            }""")
+            if info:
+                actual = actual or info.get("actual")
+                total = total or info.get("total")
+        except Exception:
+            pass
 
     return actual, total
 
@@ -385,6 +416,12 @@ def ir_a_pagina_siguiente_mensual(
 
     pagina_antes, total_paginas = obtener_info_paginacion_mensual(page)
     primera_fila_antes = obtener_clave_primera_fila_mensual(page)
+
+    # Si sabemos que estamos en la ultima pagina, no intentar avanzar
+    if pagina_antes is not None and total_paginas is not None and pagina_antes >= total_paginas:
+        log(f"Ya estamos en la ultima pagina ({pagina_antes}/{total_paginas})")
+        return False
+
     log(
         "Avanzando pagina mensual: "
         f"actual={pagina_antes or '?'} total={total_paginas or '?'}"
@@ -422,6 +459,7 @@ def ir_a_pagina_siguiente_mensual(
             and primera_fila_despues != primera_fila_antes
         )
 
+        # Si la planilla esta lista y detectamos cambio de pagina o fila
         if planilla_lista and (cambio_pagina or cambio_fila):
             log(
                 "Pagina mensual lista: "
@@ -429,12 +467,26 @@ def ir_a_pagina_siguiente_mensual(
             )
             return True
 
+        # Si la planilla esta lista pero no pudimos detectar cambio (info de paginacion no disponible),
+        # aceptar el avance si paso suficiente tiempo para que la pagina se cargue
+        if planilla_lista and pagina_antes is None and primera_fila_antes == "":
+            elapsed_ms = (time.time() - start) * 1000
+            if elapsed_ms > 2000:
+                log(
+                    "Pagina mensual lista (sin info de paginacion previa para comparar): "
+                    f"actual={pagina_despues or '?'} total={total_despues or '?'}"
+                )
+                return True
+
         page.wait_for_timeout(300)
 
-    raise RuntimeError(
-        "No se pudo avanzar a la pagina siguiente del informe mensual. "
+    # En vez de lanzar excepcion, retornar False para que el loop de paginacion
+    # se detenga graciosamente en lugar de abortar toda la operacion
+    log(
+        "No se pudo confirmar avance a pagina siguiente. "
         f"Ultimo estado observado: {ultimo_estado}"
     )
+    return False
 
 
 def click_con_fallback(locator, descripcion: str, retries: int, backoff_base_ms: int) -> None:

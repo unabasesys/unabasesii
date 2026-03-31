@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python -c \"import ast; ast.parse\\(open\\(''app/scrapers/boleta.py'', encoding=''utf-8''\\).read\\(\\)\\); print\\(''OK''\\)\")"
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''app/scrapers/boleta.py'', encoding=''utf-8''\\).read\\(\\)\\); print\\(''OK''\\)\")",
+      "Bash(find /c/Users/ddelt/Escritorio/unabase/back-python/sii-service -type f -name newLogic.py -o -type f -name *boleta* -o -type f -name *documento* -o -type f -name *compra*)"
     ]
   }
 }
