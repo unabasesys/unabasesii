@@ -1119,6 +1119,57 @@ def intentar_setear_fecha(page, fecha: Optional[str]) -> None:
     except Exception:
         pass
 
+def _recuperar_pagina_post_planilla(page, pagina_esperada, total_paginas) -> None:
+    """
+    Después de descargar la planilla (VerPlanillaMensualRec), el navegador puede
+    haber navegado fuera de la lista de boletas.  Esta función detecta ese caso
+    y vuelve atrás para restaurar la vista con la paginación intacta.
+    """
+    page.wait_for_timeout(800)
+
+    # ¿La página sigue mostrando la lista de boletas?
+    try:
+        check = page.locator(PLANILLA_CSS_SELECTOR)
+        if check.count() > 0 and check.first.is_visible():
+            log("Página sigue mostrando lista de boletas después de descarga de planilla")
+            return
+    except Exception:
+        pass
+
+    # La página cambió → intentar volver atrás
+    log("Página cambió después de descargar planilla, navegando atrás (go_back)...")
+    try:
+        page.go_back(wait_until="domcontentloaded", timeout=15000)
+        page.wait_for_timeout(1000)
+    except Exception as e:
+        log(f"go_back falló: {e}")
+
+    # Verificar que volvimos a la lista de boletas
+    try:
+        esperar_vista_mensual_lista(page, timeout_ms=15000)
+        log("Página recuperada con go_back")
+
+        # Verificar que estamos en la página correcta
+        pag_actual, _ = obtener_info_paginacion_mensual(page)
+        if pag_actual is not None and pagina_esperada is not None and pag_actual == pagina_esperada:
+            log(f"Confirmado: seguimos en página {pag_actual}")
+        elif pag_actual is not None and pagina_esperada is not None:
+            log(f"Página actual={pag_actual}, esperada={pagina_esperada} (puede diferir, continuando)")
+        return
+    except Exception as e:
+        log(f"No se pudo recuperar la lista de boletas con go_back: {e}")
+
+    # Último recurso: segundo go_back (a veces el primero llega a una página intermedia)
+    log("Intentando segundo go_back...")
+    try:
+        page.go_back(wait_until="domcontentloaded", timeout=15000)
+        page.wait_for_timeout(1000)
+        esperar_vista_mensual_lista(page, timeout_ms=15000)
+        log("Página recuperada con segundo go_back")
+    except Exception as e:
+        log(f"Segundo go_back también falló: {e} — la paginación podría no continuar")
+
+
 def _abrir_mensual_y_descargar_paginado(
     page,
     out_xls: Path,
@@ -1208,6 +1259,11 @@ def _abrir_mensual_y_descargar_paginado(
             filas_combinadas.append(fila)
             agregadas += 1
         log(f"Pagina {pagina_log}: filas nuevas agregadas={agregadas}")
+
+        # ── Recuperar estado de página después de descargar planilla ──
+        # La descarga de planilla (VerPlanillaMensualRec) puede navegar la página
+        # causando que se pierda la lista de boletas y los controles de paginación.
+        _recuperar_pagina_post_planilla(page, pagina_log, total_paginas)
 
         if descargar_pdfs and destino_pdfs is not None:
             enviados_pagina = _descargar_pdfs_boletas_pagina(
