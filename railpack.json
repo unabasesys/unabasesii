@@ -8,11 +8,38 @@
       },
       "commands": [
         "...",
-        "playwright install --with-deps chromium"
+        "playwright install chromium"
       ]
     }
   },
   "deploy": {
+    "aptPackages": [
+      "libglib2.0-0",
+      "libnss3",
+      "libnspr4",
+      "libdbus-1-3",
+      "libatk1.0-0",
+      "libatk-bridge2.0-0",
+      "libatspi2.0-0",
+      "libcups2",
+      "libdrm2",
+      "libxkbcommon0",
+      "libxcomposite1",
+      "libxdamage1",
+      "libxrandr2",
+      "libgbm1",
+      "libpango-1.0-0",
+      "libcairo2",
+      "libasound2",
+      "libxshmfence1",
+      "libx11-6",
+      "libx11-xcb1",
+      "libxcb1",
+      "libxext6",
+      "libxfixes3",
+      "libexpat1",
+      "fonts-liberation"
+    ],
     "variables": {
       "PLAYWRIGHT_BROWSERS_PATH": "/app/.playwright"
     },
