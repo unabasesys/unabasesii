@@ -29,6 +29,9 @@ def build_chromium_launch_kwargs(headless: bool, slow_mo: int = 0) -> Dict[str, 
                 "--disable-gpu",
                 "--disable-setuid-sandbox",
                 "--no-sandbox",
+                "--single-process",
+                "--disable-features=VizDisplayCompositor",
+                "--disable-software-rasterizer",
             ]
         )
 

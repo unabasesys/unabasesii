@@ -13,7 +13,8 @@
       "WebFetch(domain:schema.railpack.com)",
       "WebFetch(domain:docs.railway.com)",
       "WebFetch(domain:railpack.com)",
-      "WebFetch(domain:github.com)"
+      "WebFetch(domain:github.com)",
+      "Bash(python -c \"from app.core.browser import build_chromium_launch_kwargs; kwargs = build_chromium_launch_kwargs\\(headless=True\\); print\\(''Args:'', kwargs[''args'']\\); print\\(''OK''\\)\")"
     ]
   }
 }
