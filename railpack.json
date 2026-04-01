@@ -3,10 +3,9 @@
   "provider": "python",
   "steps": {
     "install": {
-      "inputs": [{ "local": true, "include": ["."] }],
       "commands": [
-        "pip install --no-cache-dir -r requirements.txt",
-        "playwright install --with-deps firefox"
+        "...",
+        "playwright install firefox"
       ]
     }
   },

@@ -12,7 +12,8 @@
       "Bash(docker \")",
       "WebFetch(domain:schema.railpack.com)",
       "WebFetch(domain:docs.railway.com)",
-      "WebFetch(domain:railpack.com)"
+      "WebFetch(domain:railpack.com)",
+      "WebFetch(domain:github.com)"
     ]
   }
 }
