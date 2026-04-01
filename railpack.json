@@ -1,8 +1,12 @@
 {
   "$schema": "https://schema.railpack.com",
   "steps": {
+    "code": {
+      "inputs": ["context"],
+      "commands": []
+    },
     "install": {
-      "inputs": ["."],
+      "inputs": [{ "step": "code" }],
       "commands": [
         "pip install --no-cache-dir -r requirements.txt",
         "playwright install --with-deps firefox"
