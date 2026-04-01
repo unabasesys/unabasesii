@@ -10,13 +10,14 @@ Este es el unico modulo que conoce el flujo completo - cada pieza individual
 
 import asyncio
 import logging
+import os
+import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, List
 
-from playwright.sync_api import sync_playwright
-
-from app.core.config import SCRAPER_TIMEOUT_S, SII_HEADLESS, TEMP_DIR
+from app.core.config import BASE_DIR, SCRAPER_TIMEOUT_S, SII_HEADLESS, TEMP_DIR
 from app.core.execution_gate import sii_serial_execution
 from app.models.schemas import SiiRequest
 from app.services.csv_parser import parse_csv
@@ -37,21 +38,34 @@ def _run_compras_sync(
     headless: bool,
     hostname: str,
 ) -> None:
-    from app.scrapers.compras_csv import run as run_compras
-
     logger.info("[ORQUESTADOR] Compras CSV | rut=%s | hostname=%s", rut_completo, hostname or "")
 
     with sii_serial_execution("compras_csv", rut_completo, priority="foreground"):
-        with sync_playwright() as pw:
-            run_compras(
-                playwright=pw,
-                rut_usuario=rut_completo,
-                clave_usuario=clave,
-                fecha=fecha,
-                ruta_csv=str(output_file),
-                headless=headless,
-                hostname=hostname,
-            )
+        env = os.environ.copy()
+        env.setdefault("PYTHONUNBUFFERED", "1")
+        command = [
+            sys.executable,
+            "-m",
+            "app.scrapers.exportador",
+            "--rut",
+            rut_completo,
+            "--clave",
+            clave,
+            "--fecha",
+            fecha,
+            "--csv",
+            str(output_file),
+        ]
+        if headless:
+            command.append("--headless")
+
+        subprocess.run(
+            command,
+            cwd=str(BASE_DIR),
+            env=env,
+            check=True,
+            timeout=SCRAPER_TIMEOUT_S,
+        )
 
 
 def _run_boletas_sync(
@@ -63,22 +77,43 @@ def _run_boletas_sync(
     headless: bool,
     hostname: str,
 ) -> None:
-    from app.scrapers.boletas_csv import run as run_boletas
-
     logger.info("[ORQUESTADOR] Boletas CSV | rut=%s-%s | hostname=%s", rut, dv, hostname or "")
 
     with sii_serial_execution("boletas_csv", f"{rut}-{dv}", priority="foreground"):
-        with sync_playwright() as pw:
-            run_boletas(
-                playwright=pw,
-                rut=rut,
-                dv=dv,
-                clave=clave,
-                fecha=fecha,
-                output_file=output_file,
-                headless=headless,
-                hostname=hostname,
-            )
+        env = os.environ.copy()
+        env.setdefault("PYTHONUNBUFFERED", "1")
+        command = [
+            sys.executable,
+            "-m",
+            "app.scrapers.boleta",
+            "--rut",
+            rut,
+            "--dv",
+            dv,
+            "--clave",
+            clave,
+            "--fecha",
+            fecha,
+            "--out",
+            str(output_file),
+            "--reintentos-sii",
+            "3",
+            "--reintentos-click",
+            "3",
+            "--backoff-base-ms",
+            "700",
+            "--timezone",
+            "America/Santiago",
+        ]
+        if headless:
+            command.append("--headless")
+        subprocess.run(
+            command,
+            cwd=str(BASE_DIR),
+            env=env,
+            check=True,
+            timeout=SCRAPER_TIMEOUT_S,
+        )
 
 
 async def _wait_for_file(path: Path, timeout_s: float = 2.5) -> bool:
@@ -101,12 +136,9 @@ async def _download_compras(
     output_file = job_dir / "registro_compras.csv"
 
     try:
-        await asyncio.wait_for(
-            asyncio.to_thread(
-                _run_compras_sync, rut_completo, clave, fecha,
-                output_file, SII_HEADLESS, hostname,
-            ),
-            timeout=SCRAPER_TIMEOUT_S,
+        await asyncio.to_thread(
+            _run_compras_sync, rut_completo, clave, fecha,
+            output_file, SII_HEADLESS, hostname,
         )
 
         csv_path = output_file
@@ -118,8 +150,11 @@ async def _download_compras(
         logger.warning("[ORQUESTADOR] CSV de compras no generado: %s", csv_path)
         return [], False
 
-    except asyncio.TimeoutError:
+    except subprocess.TimeoutExpired:
         logger.error("[ORQUESTADOR] Timeout descargando compras (%ds)", SCRAPER_TIMEOUT_S)
+        return [], False
+    except subprocess.CalledProcessError as exc:
+        logger.error("[ORQUESTADOR] Compras termino con error (exit=%s)", exc.returncode)
         return [], False
     except Exception as exc:
         logger.error("[ORQUESTADOR] Error descargando compras: %s", exc)
@@ -134,12 +169,9 @@ async def _download_boletas(
     output_file = job_dir / "registro_boletas.xls"
 
     try:
-        await asyncio.wait_for(
-            asyncio.to_thread(
-                _run_boletas_sync, rut, dv, clave, fecha,
-                output_file, SII_HEADLESS, hostname,
-            ),
-            timeout=SCRAPER_TIMEOUT_S,
+        await asyncio.to_thread(
+            _run_boletas_sync, rut, dv, clave, fecha,
+            output_file, SII_HEADLESS, hostname,
         )
 
         csv_path = output_file.with_suffix(".csv")
@@ -151,8 +183,11 @@ async def _download_boletas(
         logger.warning("[ORQUESTADOR] CSV de boletas no generado: %s", csv_path)
         return [], False
 
-    except asyncio.TimeoutError:
+    except subprocess.TimeoutExpired:
         logger.error("[ORQUESTADOR] Timeout descargando boletas (%ds)", SCRAPER_TIMEOUT_S)
+        return [], False
+    except subprocess.CalledProcessError as exc:
+        logger.error("[ORQUESTADOR] Boletas termino con error (exit=%s)", exc.returncode)
         return [], False
     except Exception as exc:
         logger.error("[ORQUESTADOR] Error descargando boletas: %s", exc)

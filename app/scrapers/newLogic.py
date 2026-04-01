@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 import requests
 from playwright.sync_api import Playwright, TimeoutError as PlaywrightTimeoutError, sync_playwright
 
+from app.core.browser import build_chromium_launch_kwargs
 from app.scrapers.sii_session import close_sii_session
 
 logger = logging.getLogger(__name__)
@@ -298,9 +299,10 @@ def launch_browser_for_compras_pdfs(playwright: Playwright, headless: bool):
     browser_name = "chromium"
     try:
         browser = playwright.chromium.launch(
-            headless=headless,
-            slow_mo=slow_mo,
-            args=["--ignore-certificate-errors"],
+            **build_chromium_launch_kwargs(
+                headless=headless,
+                slow_mo=slow_mo,
+            )
         )
         logger.info("Usando navegador %s para PDFs de compras", browser_name)
         return browser, browser_name

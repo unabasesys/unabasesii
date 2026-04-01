@@ -22,6 +22,7 @@ from playwright.sync_api import (
     TimeoutError as PwTimeoutError,
 )
 
+from app.core.browser import build_chromium_launch_kwargs
 from app.scrapers.sii_session import close_sii_session
 
 # ========= Constantes/UI =========
@@ -174,10 +175,11 @@ def esperar_post_login(page, timeout_ms=24000) -> str:
 def safe_click(locator, descripcion: str, retries: int, backoff_base_ms: int) -> None:
     for intento in range(1, retries + 1):
         try:
-            locator.scroll_into_view_if_needed()
+            locator.scroll_into_view_if_needed(timeout=4_000)
             locator.click(timeout=6000)
             return
-        except Exception:
+        except Exception as exc:
+            log(f"Click fallo [{descripcion}] intento {intento}/{retries}: {exc}")
             if intento == retries:
                 raise
             time.sleep(0.3)
@@ -1432,9 +1434,10 @@ def run(playwright: Playwright,
     )
 
     browser = playwright.chromium.launch(
-        headless=headless,
-        slow_mo=150 if not headless else 0,
-        args=["--ignore-certificate-errors"],
+        **build_chromium_launch_kwargs(
+            headless=headless,
+            slow_mo=150 if not headless else 0,
+        )
     )
     context = browser.new_context(
         accept_downloads=True,

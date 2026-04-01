@@ -5,6 +5,7 @@ from pathlib import Path
 
 from playwright.sync_api import Playwright, sync_playwright
 
+from app.core.browser import build_chromium_launch_kwargs
 from app.scrapers.sii_session import close_sii_session
 
 DOWNLOAD_TIMEOUT_MS = 90_000
@@ -74,9 +75,10 @@ def run(playwright: Playwright, rut_usuario: str, clave_usuario: str, fecha: str
     print(f"[PY][RUT-CONTROL] proceso=compras_csv rut_documentos={rut_usuario} rut_login={rut_usuario}")
 
     browser = playwright.chromium.launch(
-        headless=headless,
-        slow_mo=200 if not headless else 0,
-        args=["--ignore-certificate-errors"],
+        **build_chromium_launch_kwargs(
+            headless=headless,
+            slow_mo=200 if not headless else 0,
+        )
     )
     context = browser.new_context(
         accept_downloads=True,
