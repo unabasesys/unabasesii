@@ -73,7 +73,11 @@ def run(playwright: Playwright, rut_usuario: str, clave_usuario: str, fecha: str
     print("[PY] Headless:", headless)
     print(f"[PY][RUT-CONTROL] proceso=compras_csv rut_documentos={rut_usuario} rut_login={rut_usuario}")
 
-    browser = playwright.firefox.launch(headless=headless, slow_mo=200 if not headless else 0)
+    browser = playwright.chromium.launch(
+        headless=headless,
+        slow_mo=200 if not headless else 0,
+        args=["--ignore-certificate-errors"],
+    )
     context = browser.new_context(
         accept_downloads=True,
         locale="es-CL",

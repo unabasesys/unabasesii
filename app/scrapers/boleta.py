@@ -1431,9 +1431,10 @@ def run(playwright: Playwright,
         f"rut_documentos={rut}-{dv or ''} rut_login={rut}-{dv or ''}"
     )
 
-    browser = playwright.firefox.launch(
+    browser = playwright.chromium.launch(
         headless=headless,
-        slow_mo=150 if not headless else 0
+        slow_mo=150 if not headless else 0,
+        args=["--ignore-certificate-errors"],
     )
     context = browser.new_context(
         accept_downloads=True,

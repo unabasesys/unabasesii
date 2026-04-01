@@ -35,9 +35,6 @@ DOCUMENT_TARGET_RE = re.compile(
     r"((?:https?://[^'\"\s<>]+)?(?:/cgi-bin/Portal001/|/)?(?:mipeGesDocRcp|mipeShowPdf)\.cgi\?[^'\"\s<>]+)",
     re.I,
 )
-_SKIP_CHROMIUM_FOR_COMPRAS_PDFS = False
-
-
 def formatear_rut(rut_raw: str) -> str:
     rut = rut_raw.replace(".", "").strip()
     if "-" not in rut and len(rut) > 1:
@@ -297,47 +294,21 @@ def open_compras_entry(page):
 
 
 def launch_browser_for_compras_pdfs(playwright: Playwright, headless: bool):
-    global _SKIP_CHROMIUM_FOR_COMPRAS_PDFS
-    last_error = None
     slow_mo = 250 if not headless else 0
-
-    browser_candidates = [
-        (
-            "chromium",
-            playwright.chromium,
-            {
-                "headless": headless,
-                "slow_mo": slow_mo,
-                "args": ["--ignore-certificate-errors"],
-            },
-        ),
-        (
-            "firefox",
-            playwright.firefox,
-            {
-                "headless": headless,
-                "slow_mo": slow_mo,
-            },
-        ),
-    ]
-
-    if _SKIP_CHROMIUM_FOR_COMPRAS_PDFS:
-        browser_candidates = [candidate for candidate in browser_candidates if candidate[0] != "chromium"]
-
-    for browser_name, launcher, kwargs in browser_candidates:
-        try:
-            browser = launcher.launch(**kwargs)
-            logger.info("Usando navegador %s para PDFs de compras", browser_name)
-            return browser, browser_name
-        except Exception as exc:
-            last_error = exc
-            if browser_name == "chromium" and "Executable doesn't exist" in str(exc):
-                _SKIP_CHROMIUM_FOR_COMPRAS_PDFS = True
-            logger.warning("No se pudo iniciar navegador %s para PDFs de compras: %s", browser_name, exc)
-
-    raise RuntimeError(
-        f"No se pudo iniciar un navegador para PDFs de compras: {last_error}"
-    )
+    browser_name = "chromium"
+    try:
+        browser = playwright.chromium.launch(
+            headless=headless,
+            slow_mo=slow_mo,
+            args=["--ignore-certificate-errors"],
+        )
+        logger.info("Usando navegador %s para PDFs de compras", browser_name)
+        return browser, browser_name
+    except Exception as exc:
+        logger.warning("No se pudo iniciar navegador %s para PDFs de compras: %s", browser_name, exc)
+        raise RuntimeError(
+            f"No se pudo iniciar el navegador {browser_name} para PDFs de compras: {exc}"
+        ) from exc
 
 
 def build_compras_pdf_context(browser):
@@ -602,7 +573,7 @@ def _fill_and_submit_login(page, rut_usuario: str, clave_usuario: str, max_attem
         if is_cert_error_page(page):
             dump_page_diagnostics(page, "login_cert_error")
             raise RuntimeError(
-                "Firefox/Playwright bloqueo la pagina del SII por un problema HTTPS/certificado"
+                "Chromium/Playwright bloqueo la pagina del SII por un problema HTTPS/certificado"
             )
 
         if attempt == 1:
@@ -675,7 +646,7 @@ def _wait_for_login_complete(page, timeout: int = 30_000) -> bool:
         if is_cert_error_page(page):
             dump_page_diagnostics(page, "login_cert_error")
             raise RuntimeError(
-                "Firefox/Playwright bloqueo la pagina del SII por un problema HTTPS/certificado"
+                "Chromium/Playwright bloqueo la pagina del SII por un problema HTTPS/certificado"
             )
 
         # Detectar y saltar pantallas intermedias con boton "Continuar"

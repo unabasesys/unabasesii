@@ -8,7 +8,7 @@
       },
       "commands": [
         "...",
-        "playwright install firefox"
+        "playwright install chromium"
       ]
     }
   },
