@@ -1119,55 +1119,70 @@ def intentar_setear_fecha(page, fecha: Optional[str]) -> None:
     except Exception:
         pass
 
-def _recuperar_pagina_post_planilla(page, pagina_esperada, total_paginas) -> None:
+def _scrape_tabla_boletas_pagina(page) -> Tuple[Optional[List[str]], List[List[str]]]:
     """
-    Después de descargar la planilla (VerPlanillaMensualRec), el navegador puede
-    haber navegado fuera de la lista de boletas.  Esta función detecta ese caso
-    y vuelve atrás para restaurar la vista con la paginación intacta.
+    Extrae headers y filas de datos directamente del HTML de la tabla de boletas
+    en la página actual, SIN hacer click en el botón Planilla.
+    Retorna (headers_o_None, lista_de_filas).
     """
-    page.wait_for_timeout(800)
+    result = page.evaluate("""() => {
+        const reporteRows = document.querySelectorAll('tr.reporte');
+        if (reporteRows.length === 0) return { headers: null, rows: [] };
 
-    # ¿La página sigue mostrando la lista de boletas?
+        const table = reporteRows[0].closest('table');
+        if (!table) return { headers: null, rows: [] };
+
+        // ── Extraer headers ──
+        let headers = null;
+
+        // Estrategia 1: filas con <th> dentro de la misma tabla
+        const allRows = Array.from(table.querySelectorAll('tr'));
+        for (const row of allRows) {
+            const ths = row.querySelectorAll('th');
+            if (ths.length >= 3) {
+                headers = Array.from(ths).map(
+                    th => th.innerText.replace(/[\\r\\n]+/g, ' ').replace(/\\s+/g, ' ').trim()
+                );
+                break;
+            }
+        }
+
+        // Estrategia 2: fila inmediatamente anterior a la primera tr.reporte
+        if (!headers) {
+            const idx = allRows.indexOf(reporteRows[0]);
+            if (idx > 0) {
+                const cells = allRows[idx - 1].querySelectorAll('td, th');
+                if (cells.length >= 3) {
+                    headers = Array.from(cells).map(
+                        c => c.innerText.replace(/[\\r\\n]+/g, ' ').replace(/\\s+/g, ' ').trim()
+                    );
+                }
+            }
+        }
+
+        // ── Extraer filas de datos ──
+        const rows = Array.from(reporteRows).map(row => {
+            return Array.from(row.querySelectorAll('td')).map(td => {
+                return td.innerText.replace(/[\\r\\n]+/g, ' ').replace(/\\s+/g, ' ').trim();
+            });
+        });
+
+        return { headers, rows };
+    }""")
+
+    headers = result.get("headers") if result else None
+    rows = result.get("rows", []) if result else []
+    return headers, rows
+
+
+def _scrape_info_line(page) -> str:
+    """Extrae la línea de información (ej. 'Mensual de Boletas de Honorarios...')."""
     try:
-        check = page.locator(PLANILLA_CSS_SELECTOR)
-        if check.count() > 0 and check.first.is_visible():
-            log("Página sigue mostrando lista de boletas después de descarga de planilla")
-            return
+        el = page.get_by_text(OK_TXT, exact=False).first
+        texto = el.inner_text().strip()
+        return texto if texto else "Informe Mensual de Boletas"
     except Exception:
-        pass
-
-    # La página cambió → intentar volver atrás
-    log("Página cambió después de descargar planilla, navegando atrás (go_back)...")
-    try:
-        page.go_back(wait_until="domcontentloaded", timeout=15000)
-        page.wait_for_timeout(1000)
-    except Exception as e:
-        log(f"go_back falló: {e}")
-
-    # Verificar que volvimos a la lista de boletas
-    try:
-        esperar_vista_mensual_lista(page, timeout_ms=15000)
-        log("Página recuperada con go_back")
-
-        # Verificar que estamos en la página correcta
-        pag_actual, _ = obtener_info_paginacion_mensual(page)
-        if pag_actual is not None and pagina_esperada is not None and pag_actual == pagina_esperada:
-            log(f"Confirmado: seguimos en página {pag_actual}")
-        elif pag_actual is not None and pagina_esperada is not None:
-            log(f"Página actual={pag_actual}, esperada={pagina_esperada} (puede diferir, continuando)")
-        return
-    except Exception as e:
-        log(f"No se pudo recuperar la lista de boletas con go_back: {e}")
-
-    # Último recurso: segundo go_back (a veces el primero llega a una página intermedia)
-    log("Intentando segundo go_back...")
-    try:
-        page.go_back(wait_until="domcontentloaded", timeout=15000)
-        page.wait_for_timeout(1000)
-        esperar_vista_mensual_lista(page, timeout_ms=15000)
-        log("Página recuperada con segundo go_back")
-    except Exception as e:
-        log(f"Segundo go_back también falló: {e} — la paginación podría no continuar")
+        return "Informe Mensual de Boletas"
 
 
 def _abrir_mensual_y_descargar_paginado(
@@ -1189,7 +1204,6 @@ def _abrir_mensual_y_descargar_paginado(
         destino_pdfs.mkdir(parents=True, exist_ok=True)
         log(f"Descargando PDFs a: {destino_pdfs}")
 
-        # Cargar cache de boletas ya descargadas
         cache_key = hostname or "default"
         downloaded_cache = load_boleta_pdf_cache(cache_key)
         log(f"[CACHE] Cache boletas cargada para '{cache_key}': {len(downloaded_cache)} PDFs previamente descargados")
@@ -1203,68 +1217,46 @@ def _abrir_mensual_y_descargar_paginado(
     headers = None
     filas_combinadas: List[List[str]] = []
     filas_vistas = set()
-    modos_conversion = []
     paginas_procesadas = 0
     pdfs_descargados = 0
 
+    # ══════════════════════════════════════════════════════════════════
+    # PASO 1 — Recorrer TODAS las páginas scrapeando la tabla HTML.
+    #          No tocamos el botón Planilla aquí, así la paginación
+    #          nunca se rompe.
+    # ══════════════════════════════════════════════════════════════════
     while True:
         pagina_actual, total_paginas = obtener_info_paginacion_mensual(page)
         pagina_log = pagina_actual or (paginas_procesadas + 1)
-        log(f"Esperando descarga de 'Planilla' para pagina {pagina_log}/{total_paginas or '?'}...")
+        log(f"Scrapeando tabla HTML de boletas — página {pagina_log}/{total_paginas or '?'}...")
 
-        download = esperar_y_disparar_descarga_planilla(
-            page,
-            retries_click=retries_click,
-            backoff_base_ms=backoff_base_ms,
-            diag_dir=diag_dir,
-        )
+        # Asegurar que la vista esté lista (planilla visible = tabla cargada)
+        esperar_vista_mensual_lista(page)
 
-        failure = download.failure()
-        if failure:
-            raise RuntimeError(f"Fallo en descarga: {failure}")
+        # Extraer headers (solo la primera vez) y filas de datos
+        scraped_headers, scraped_rows = _scrape_tabla_boletas_pagina(page)
 
-        pagina_tag = f"pagina_{pagina_log}"
-        temp_xls = diag_planillas_dir / f"{pagina_tag}.xls"
-        temp_csv = diag_planillas_dir / f"{pagina_tag}.csv"
+        if headers is None and scraped_headers:
+            headers = scraped_headers
+            info_line = _scrape_info_line(page)
+            grupos_line = ""
+            header_line = ",".join(f'"{h}"' for h in headers)
+            log(f"Headers detectados ({len(headers)} cols): {headers}")
 
-        try:
-            temp_xls.unlink(missing_ok=True)
-        except Exception:
-            pass
-        try:
-            temp_csv.unlink(missing_ok=True)
-        except Exception:
-            pass
-
-        download.save_as(temp_xls)
-        log(f"Planilla descargada ({download.suggested_filename}) -> {temp_xls.name}")
-
-        modo = convertir_a_csv(temp_xls, temp_csv)
-        modos_conversion.append(modo)
-        log(f"Planilla pagina {pagina_log} convertida a CSV ({modo})")
-
-        info_tmp, grupos_tmp, header_tmp, headers_tmp, filas_tmp = _leer_fragmento_csv_boletas(temp_csv)
-        if info_line is None:
-            info_line = info_tmp
-            grupos_line = grupos_tmp
-            header_line = header_tmp
-            headers = headers_tmp
-
+        # Filtrar filas tipo "Totales*" y deduplicar
         agregadas = 0
-        for fila in filas_tmp:
+        for fila in scraped_rows:
+            if fila and fila[0].startswith("Totales"):
+                continue
             fila_key = tuple(fila)
             if fila_key in filas_vistas:
                 continue
             filas_vistas.add(fila_key)
             filas_combinadas.append(fila)
             agregadas += 1
-        log(f"Pagina {pagina_log}: filas nuevas agregadas={agregadas}")
+        log(f"Página {pagina_log}: {len(scraped_rows)} filas scrapeadas, {agregadas} nuevas")
 
-        # ── Recuperar estado de página después de descargar planilla ──
-        # La descarga de planilla (VerPlanillaMensualRec) puede navegar la página
-        # causando que se pierda la lista de boletas y los controles de paginación.
-        _recuperar_pagina_post_planilla(page, pagina_log, total_paginas)
-
+        # Descargar PDFs de esta página (no navega, solo abre descargas)
         if descargar_pdfs and destino_pdfs is not None:
             enviados_pagina = _descargar_pdfs_boletas_pagina(
                 page,
@@ -1275,43 +1267,88 @@ def _abrir_mensual_y_descargar_paginado(
                 downloaded_cache=downloaded_cache,
             )
             pdfs_descargados += enviados_pagina
-            log(f"Pagina {pagina_log}: PDFs procesados={enviados_pagina}")
+            log(f"Página {pagina_log}: PDFs procesados={enviados_pagina}")
 
         paginas_procesadas += 1
 
         if not ir_a_pagina_siguiente_mensual(page, retries_click, backoff_base_ms):
             break
 
-    # Guardar cache actualizada
+    # Guardar cache de PDFs
     if descargar_pdfs and downloaded_cache is not None:
         cache_key = hostname or "default"
         save_boleta_pdf_cache(cache_key, downloaded_cache)
         log(f"[CACHE] Cache boletas actualizada para '{cache_key}': {len(downloaded_cache)} PDFs totales registrados")
 
-    if info_line is None or grupos_line is None or header_line is None or headers is None:
-        raise RuntimeError("No se pudo reconstruir el contenido de la planilla de boletas.")
+    # ══════════════════════════════════════════════════════════════════
+    # PASO 2 — Descargar la planilla UNA sola vez (última página visible)
+    #          para obtener metadata (info_line, grupos_line, headers)
+    #          con el formato exacto del SII, si el scraping de headers
+    #          falló o como fallback de calidad.
+    # ══════════════════════════════════════════════════════════════════
+    planilla_descargada = False
+    try:
+        log("Descargando planilla única para metadata/formato...")
+        download = esperar_y_disparar_descarga_planilla(
+            page,
+            retries_click=retries_click,
+            backoff_base_ms=backoff_base_ms,
+            diag_dir=diag_dir,
+        )
+        failure = download.failure()
+        if not failure:
+            temp_xls = diag_planillas_dir / "planilla_metadata.xls"
+            temp_csv = diag_planillas_dir / "planilla_metadata.csv"
+            try:
+                temp_xls.unlink(missing_ok=True)
+            except Exception:
+                pass
+            try:
+                temp_csv.unlink(missing_ok=True)
+            except Exception:
+                pass
 
+            download.save_as(temp_xls)
+            modo = convertir_a_csv(temp_xls, temp_csv)
+            info_tmp, grupos_tmp, header_tmp, headers_tmp, _ = _leer_fragmento_csv_boletas(temp_csv)
+
+            # Usar metadata de la planilla (formato oficial SII)
+            info_line = info_tmp
+            grupos_line = grupos_tmp
+            header_line = header_tmp
+            headers = headers_tmp
+            planilla_descargada = True
+            log(f"Metadata de planilla obtenida ({modo}): {len(headers_tmp)} cols")
+    except Exception as e:
+        log(f"No se pudo descargar planilla para metadata (no crítico): {e}")
+
+    if headers is None:
+        raise RuntimeError("No se pudieron obtener los headers de la tabla de boletas.")
+
+    # ══════════════════════════════════════════════════════════════════
+    # PASO 3 — Construir CSV/XLS combinado con todas las filas
+    # ══════════════════════════════════════════════════════════════════
     fila_totales = _construir_fila_totales_boletas(headers, filas_combinadas)
     _escribir_csv_boletas_combinado(
         out_csv,
-        info_line=info_line,
-        grupos_line=grupos_line,
-        header_line=header_line,
+        info_line=info_line or "Informe Mensual de Boletas",
+        grupos_line=grupos_line or "",
+        header_line=header_line or ",".join(headers),
         filas=filas_combinadas,
         fila_totales=fila_totales,
     )
     _escribir_xls_boletas_combinado(
         out_xls,
-        info_line=info_line,
+        info_line=info_line or "Informe Mensual de Boletas",
         headers=headers,
         filas=filas_combinadas,
         fila_totales=fila_totales,
     )
 
-    modo_final = modos_conversion[0] if len(set(modos_conversion)) == 1 else f"paginado:{'+'.join(sorted(set(modos_conversion)))}"
+    modo_final = f"scraping_html+planilla" if planilla_descargada else "scraping_html"
     log(
         f"Planilla consolidada: paginas={paginas_procesadas}, filas={len(filas_combinadas)}, "
-        f"csv={out_csv}, xls={out_xls}"
+        f"csv={out_csv}, xls={out_xls}, modo={modo_final}"
     )
 
     return ResultDescarga(
