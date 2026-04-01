@@ -9,7 +9,10 @@
       "Bash(python -c \"from app.scrapers.boleta import _abrir_mensual_y_descargar_paginado, _scrape_tabla_boletas_pagina, _scrape_info_line; print\\(''OK: imports work''\\)\")",
       "Bash(package.json)",
       "Bash(requirements)",
-      "Bash(docker \")"
+      "Bash(docker \")",
+      "WebFetch(domain:schema.railpack.com)",
+      "WebFetch(domain:docs.railway.com)",
+      "WebFetch(domain:railpack.com)"
     ]
   }
 }
