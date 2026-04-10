@@ -165,12 +165,13 @@ def _run_compras_pdfs(
 
     from app.scrapers.compras_pdf import run as run_compras_pdf
 
+    rut_login = f"{rut_apoderado}-{dv_apoderado}"
     logger.info(
-        "[PDF-PIPELINE] Compras PDFs | rut_empresa=%s | rut_apoderado=%s-%s | hostname=%s",
-        rut_completo, rut_apoderado, dv_apoderado, hostname or "(sin hostname)",
+        "[PDF-PIPELINE] Compras PDFs | rut_empresa=%s | rut_login=%s | hostname=%s",
+        rut_completo, rut_login, hostname or "(sin hostname)",
     )
 
-    with sii_serial_execution("compras_pdf", rut_completo, priority="background"):
+    with sii_serial_execution("compras_pdf", rut_login, priority="background"):
         with sync_playwright() as pw:
             run_compras_pdf(
                 playwright=pw, rut_empresa=rut_completo, clave=clave, fecha=fecha,
