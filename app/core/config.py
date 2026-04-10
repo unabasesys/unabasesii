@@ -19,6 +19,7 @@ DEBUG: bool = os.getenv("DEBUG", "false").strip().lower() in {"1", "true", "yes"
 SII_HEADLESS: bool = os.getenv("SII_HEADLESS", "true").strip().lower() in {"1", "true", "yes", "on"}
 PDF_QUEUE_MAXSIZE: int = max(int(os.getenv("SII_PDF_QUEUE_MAXSIZE", "24")), 1)
 BACKGROUND_GRACE_MS: int = max(int(os.getenv("SII_BACKGROUND_GRACE_MS", "1500")), 0)
+MAX_CONCURRENT_SESSIONS: int = max(int(os.getenv("SII_MAX_CONCURRENT_SESSIONS", "3")), 1)
 
 # ── URLs externas ──────────────────────────────────────────────────────────
 SAVE_PDF_URL: str = os.getenv("SAVE_PDF_URL", "https://frank.unabase.com/node/savePdfDocumento")
