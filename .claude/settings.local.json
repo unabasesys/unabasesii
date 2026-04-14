@@ -16,7 +16,8 @@
       "WebFetch(domain:github.com)",
       "Bash(python -c \"from app.core.browser import build_chromium_launch_kwargs; kwargs = build_chromium_launch_kwargs\\(headless=True\\); print\\(''Args:'', kwargs[''args'']\\); print\\(''OK''\\)\")",
       "Bash(find /c/Users/ddelt/Escritorio/unabase/back-python/sii-service -name \"*.py\" -type f -exec grep -l \"savePdfBoleta\\\\|savePdfDocumento\\\\|hostname\" {} \\\\;)",
-      "Bash(python -c \"from app.core.execution_gate import sii_serial_execution; print\\('OK'\\)\")"
+      "Bash(python -c \"from app.core.execution_gate import sii_serial_execution; print\\('OK'\\)\")",
+      "Bash(python -m py_compile app/scrapers/boleta.py)"
     ]
   }
 }
