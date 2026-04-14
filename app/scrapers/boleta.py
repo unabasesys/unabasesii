@@ -263,12 +263,16 @@ def obtener_info_paginacion_mensual(page) -> Tuple[Optional[int], Optional[int]]
             pass
 
     # Estrategia 3: texto "página X de Y" en la pagina
+    # IMPORTANTE: chequear count() primero para evitar que inner_text() espere
+    # el default_timeout (45s) cuando el texto no existe.
     try:
-        texto = page.get_by_text(PAGINA_INFO_RE, exact=False).first.inner_text()
-        match = PAGINA_INFO_RE.search(texto or "")
-        if match:
-            actual = actual or int(match.group(1))
-            total = int(match.group(2))
+        loc_pag = page.get_by_text(PAGINA_INFO_RE, exact=False)
+        if loc_pag.count() > 0:
+            texto = loc_pag.first.inner_text(timeout=1500)
+            match = PAGINA_INFO_RE.search(texto or "")
+            if match:
+                actual = actual or int(match.group(1))
+                total = int(match.group(2))
     except Exception:
         pass
 
@@ -373,7 +377,8 @@ def _buscar_planilla_en_frames(page):
 
 def esperar_vista_mensual_lista(page, timeout_ms: int = VISTA_MENSUAL_TIMEOUT_MS_DEF):
     start = time.time()
-    ultimo_estado = describir_estado_mensual(page)
+    # NOTA: evitamos llamar describir_estado_mensual() al inicio porque
+    # puede colgar 45s si la vista aún no tiene los textos esperados.
 
     # Estrategia 1: wait_for_selector directo con CSS (mas confiable que polling)
     try:
@@ -419,13 +424,17 @@ def esperar_vista_mensual_lista(page, timeout_ms: int = VISTA_MENSUAL_TIMEOUT_MS
             if intentos <= 3 or intentos % 20 == 0:
                 log(f"Planilla polling #{intentos}: excepcion={type(e).__name__}: {e}")
 
-        ultimo_estado = describir_estado_mensual(page)
         try:
             page.wait_for_load_state("networkidle", timeout=2000)
         except Exception:
             pass
         page.wait_for_timeout(300)
 
+    # Diagnóstico solo al final (si la vista nunca quedó lista)
+    try:
+        ultimo_estado = describir_estado_mensual(page)
+    except Exception:
+        ultimo_estado = "desconocido"
     raise RuntimeError(
         "La vista mensual no quedo lista para descargar la planilla. "
         f"Ultimo estado observado: {ultimo_estado}"
@@ -549,9 +558,18 @@ def esperar_y_disparar_descarga_planilla(
     ultimo_error = None
 
     for intento in range(1, reintentos + 1):
-        planilla = esperar_vista_mensual_lista(page)
-        estado = describir_estado_mensual(page)
-        log(f"Planilla lista. Intento {intento}/{reintentos}. Estado: {estado}")
+        # Intento rápido: asumir que la vista ya está lista (el caller debe
+        # haberlo chequeado). En reintentos sí re-validamos.
+        if intento == 1:
+            try:
+                planilla = page.locator(PLANILLA_CSS_SELECTOR).first
+                if planilla.count() == 0 or not planilla.is_visible():
+                    planilla = esperar_vista_mensual_lista(page)
+            except Exception:
+                planilla = esperar_vista_mensual_lista(page)
+        else:
+            planilla = esperar_vista_mensual_lista(page)
+        log(f"Planilla lista. Intento {intento}/{reintentos}.")
 
         try:
             with page.expect_download(timeout=timeout_ms) as dl:
@@ -706,12 +724,19 @@ def convertir_a_csv(xls_path: Path, csv_path: Path) -> str:
         return "fallback-html"
 
 
-def _parsear_planilla_boletas(xls_path: Path) -> Tuple[str, List[str], List[List[str]]]:
+# Anclas para detectar la fila de headers real de la planilla SII
+_BOLETAS_HEADER_ANCHORS = {"folio", "rut", "fecha", "estado", "brutos", "retenido", "pagado", "n°", "nº", "numero"}
+
+
+def _parsear_planilla_boletas(xls_path: Path) -> Tuple[str, Optional[str], List[str], List[List[str]]]:
     """
     Parsea la planilla SII de boletas (HTML disfrazado de .xls o .xls clásico) y
-    retorna `(modo, headers, filas)` listo para consumir, sin pasar por un CSV
-    intermedio. La planilla del SII contiene TODAS las boletas del mes en un
-    solo archivo, así que esta es la fuente autoritativa.
+    retorna `(modo, info_line, headers, filas)`. La planilla del SII contiene
+    TODAS las boletas del mes en un solo archivo.
+
+    La tabla de la planilla tiene una fila de título arriba (ej:
+    "Contribuyente: ...") antes de los headers reales. Por eso leemos sin
+    header y detectamos la fila de headers por contenido.
     """
     with open(xls_path, "rb") as f:
         header_bytes = f.read(4096)
@@ -721,14 +746,14 @@ def _parsear_planilla_boletas(xls_path: Path) -> Tuple[str, List[str], List[List
     tables: List[pd.DataFrame] = []
     modo = "html"
     if is_html:
-        tables = pd.read_html(xls_path, header=0)
+        tables = pd.read_html(xls_path, header=None)
     else:
         try:
-            df = pd.read_excel(xls_path, engine="xlrd")
+            df = pd.read_excel(xls_path, engine="xlrd", header=None)
             tables = [df]
             modo = "excel-xlrd"
         except Exception:
-            tables = pd.read_html(xls_path, header=0)
+            tables = pd.read_html(xls_path, header=None)
             modo = "fallback-html"
 
     if not tables:
@@ -736,21 +761,64 @@ def _parsear_planilla_boletas(xls_path: Path) -> Tuple[str, List[str], List[List
 
     # Elegir la tabla más grande (la que tiene las boletas)
     best = max(tables, key=lambda d: int(d.shape[0]) * int(d.shape[1]))
-    best = best.dropna(how="all")
-    best.columns = [str(c).replace("\xa0", " ").strip() for c in best.columns]
+    best = best.dropna(how="all").reset_index(drop=True)
 
-    headers = [str(c) for c in best.columns]
+    def _norm_cell(v):
+        if pd.isna(v):
+            return ""
+        return str(v).replace("\xa0", " ").strip()
+
+    # Buscar la fila de headers: debe contener al menos 3 anclas conocidas
+    header_row_idx: Optional[int] = None
+    max_scan = min(10, len(best))
+    for i in range(max_scan):
+        row_vals = [_norm_cell(v).lower() for v in best.iloc[i].tolist()]
+        matches = sum(1 for a in _BOLETAS_HEADER_ANCHORS if any(a == rv or a in rv for rv in row_vals))
+        if matches >= 3:
+            header_row_idx = i
+            break
+
+    if header_row_idx is None:
+        # Último recurso: asumir primera fila como headers
+        header_row_idx = 0
+
+    # Extraer info_line del título (si hay filas antes de los headers)
+    info_line: Optional[str] = None
+    if header_row_idx > 0:
+        titulo_cells = [_norm_cell(v) for v in best.iloc[0].tolist() if _norm_cell(v)]
+        # Evitar repetir la misma celda muchas veces (colspan expandido)
+        vistos = []
+        for c in titulo_cells:
+            if c not in vistos:
+                vistos.append(c)
+        if vistos:
+            info_line = ", ".join(vistos)
+
+    headers_raw = [_norm_cell(v) for v in best.iloc[header_row_idx].tolist()]
+    # Limpiar headers vacíos al final
+    while headers_raw and not headers_raw[-1]:
+        headers_raw.pop()
+    headers = headers_raw
+
+    n_cols = len(headers)
     filas: List[List[str]] = []
-    for _, row in best.iterrows():
-        valores = ["" if pd.isna(v) else str(v).replace("\xa0", " ").strip() for v in row.tolist()]
+    for idx in range(header_row_idx + 1, len(best)):
+        row = best.iloc[idx].tolist()
+        valores = [_norm_cell(v) for v in row[:n_cols]]
+        # Rellenar si la fila viene corta
+        while len(valores) < n_cols:
+            valores.append("")
         if not any(valores):
             continue
-        # Descartar filas de totales (las recalculamos nosotros)
-        if valores and valores[0].lower().startswith("totales"):
+        primero = valores[0].lower()
+        if primero.startswith("totales"):
+            continue
+        # Saltar filas de leyenda/footer que no son boletas reales
+        if primero.startswith("*") or primero.startswith("nota"):
             continue
         filas.append(valores)
 
-    return modo, headers, filas
+    return modo, info_line, headers, filas
 
 # --- helpers filename seguros ---
 def _sanitize_filename(s: str) -> str:
@@ -1225,10 +1293,13 @@ def _scrape_tabla_boletas_pagina(page) -> Tuple[Optional[List[str]], List[List[s
 
 
 def _scrape_info_line(page) -> str:
-    """Extrae la línea de información (ej. 'Mensual de Boletas de Honorarios...')."""
+    """Extrae la línea de información (ej. 'Mensual de Boletas de Honorarios...').
+    Chequea count() antes de inner_text() para evitar timeouts de 45s."""
     try:
-        el = page.get_by_text(OK_TXT, exact=False).first
-        texto = el.inner_text().strip()
+        loc = page.get_by_text(OK_TXT, exact=False)
+        if loc.count() == 0:
+            return "Informe Mensual de Boletas"
+        texto = loc.first.inner_text(timeout=1500).strip()
         return texto if texto else "Informe Mensual de Boletas"
     except Exception:
         return "Informe Mensual de Boletas"
@@ -1297,14 +1368,16 @@ def _abrir_mensual_y_descargar_paginado(
             pass
         download.save_as(temp_xls)
 
-        modo, headers_planilla, filas_planilla = _parsear_planilla_boletas(temp_xls)
+        modo, info_planilla, headers_planilla, filas_planilla = _parsear_planilla_boletas(temp_xls)
         headers = headers_planilla
         filas_combinadas = filas_planilla
         header_line = ",".join(f'"{h}"' for h in headers)
+        if info_planilla:
+            info_line = info_planilla
         fuente_datos = f"planilla({modo})"
         log(
             f"Planilla parseada: modo={modo}, cols={len(headers)}, "
-            f"filas={len(filas_combinadas)}"
+            f"filas={len(filas_combinadas)}, headers={headers}"
         )
     except Exception as e:
         log(f"Falló la descarga/parseo de la planilla, usaré fallback HTML: {e}")
@@ -1451,7 +1524,6 @@ def abrir_mensual_y_descargar(page, out_xls: Path, out_csv: Path,
 
     # Si hay filtro de fecha diaria, intentarlo
     intentar_setear_fecha(page, fecha_objetivo)
-    log(f"Estado previo a Planilla: {describir_estado_mensual(page)}")
     return _abrir_mensual_y_descargar_paginado(
         page,
         out_xls=out_xls,

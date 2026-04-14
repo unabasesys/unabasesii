@@ -134,8 +134,12 @@ def parse_csv(csv_path: Path, tipo: str) -> List[Dict[str, Any]]:
             # Boletas: saltar 2 lineas de header extra
             next(fh, None)
             next(fh, None)
-            header_line = fh.readline().strip()
-            headers = [h.strip() for h in header_line.split(delimiter)]
+            header_line = fh.readline()
+            # Parsear headers con csv.reader para respetar comillas/escapes
+            try:
+                headers = [h.strip() for h in next(csv.reader([header_line], delimiter=delimiter))]
+            except Exception:
+                headers = [h.strip().strip('"') for h in header_line.strip().split(delimiter)]
             logger.info("[CSV-PARSER] Headers boletas: %s", headers)
             reader = csv.DictReader(fh, delimiter=delimiter, fieldnames=headers)
         else:
