@@ -1503,6 +1503,23 @@ def _abrir_mensual_y_descargar_paginado(
     )
 
 
+def _parsear_mes_anio(fecha: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+    """Extrae (mes, anio) en formato MM, YYYY desde una fecha YYYY-MM-DD o DD/MM/YYYY."""
+    if not fecha:
+        return None, None
+    s = fecha.strip()
+    m = re.match(r"^(\d{4})-(\d{2})-\d{2}$", s)
+    if m:
+        return m.group(2), m.group(1)
+    m = re.match(r"^\d{2}/(\d{2})/(\d{4})$", s)
+    if m:
+        return m.group(1), m.group(2)
+    m = re.match(r"^(\d{4})-(\d{2})$", s)
+    if m:
+        return m.group(2), m.group(1)
+    return None, None
+
+
 def abrir_mensual_y_descargar(page, out_xls: Path, out_csv: Path,
                                retries_click: int, backoff_base_ms: int,
                                fecha_objetivo: Optional[str],
@@ -1511,19 +1528,40 @@ def abrir_mensual_y_descargar(page, out_xls: Path, out_csv: Path,
                                hostname: Optional[str] = None,
                                pdf_dir: Optional[Path] = None,
                                descargar_pdfs: bool = False) -> ResultDescarga:
+    # Esperar al form de selección "Mensual" (el select de mes)
     try:
-        page.wait_for_selector(f"text={OK_TXT}", timeout=10000)
+        page.wait_for_selector('select[name="cbmesinformemensual"]', timeout=15000)
     except PwTimeoutError:
-        pass
+        log("No apareció el select de Mensual dentro del timeout, sigo igual…")
 
-    log("Abriendo fila 'Mensual de Boletas de'…")
-    fila = page.get_by_role("row", name=ROW_MENSUAL_RE).first
-    btn_consultar = fila.locator("#cmdconsultar1")
-    safe_click(btn_consultar, "cmdconsultar1 (abrir mensual)", retries_click, backoff_base_ms)
-    page.wait_for_timeout(700)
+    # Setear mes y año explícitamente desde fecha_objetivo
+    mes, anio = _parsear_mes_anio(fecha_objetivo)
+    if mes:
+        try:
+            page.select_option('select[name="cbmesinformemensual"]', value=mes)
+            log(f"Mes seleccionado: {mes}")
+        except Exception as e:
+            log(f"No se pudo seleccionar mes={mes}: {e}")
+    else:
+        log("Sin mes definido, se usa el valor por defecto del SII")
+    if anio:
+        try:
+            page.select_option('select[name="cbanoinformemensual"]', value=anio)
+            log(f"Año seleccionado: {anio}")
+        except Exception as e:
+            log(f"No se pudo seleccionar año={anio}: {e}")
+    else:
+        log("Sin año definido, se usa el valor por defecto del SII")
 
-    # Si hay filtro de fecha diaria, intentarlo
-    intentar_setear_fecha(page, fecha_objetivo)
+    # Click en el botón Consultar del bloque Mensual (discriminado por onclick).
+    # OJO: Mensual y Diario comparten id="cmdconsultar1", hay que usar onclick.
+    log("Click en Consultar (Mensual de Boletas)…")
+    btn_mensual = page.locator(
+        'input[type="button"][onclick*="validar_mensual_rec"]'
+    ).first
+    safe_click(btn_mensual, "Consultar Mensual", retries_click, backoff_base_ms)
+    page.wait_for_timeout(500)
+
     return _abrir_mensual_y_descargar_paginado(
         page,
         out_xls=out_xls,
