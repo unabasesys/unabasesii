@@ -79,24 +79,43 @@ def _find_razon_social(row: Dict[str, str]) -> str:
     return ""
 
 
+def _get_boleta_field(row: Dict[str, str], *keys: str) -> str:
+    """Busca el primer key no vacío (tolerante a variaciones de nombre)."""
+    for k in keys:
+        val = row.get(k)
+        if val is not None and str(val).strip():
+            return str(val).strip()
+    return ""
+
+
 def parse_boletas_row(row: Dict[str, str]) -> Optional[Dict[str, Any]]:
     try:
-        folio = str(row.get("N°", "") or row.get("N", "") or "").strip()
+        folio = _get_boleta_field(row, "N°", "Nº", "N", "Numero", "Número")
         if not folio or "Totales" in str(row):
             return None
+
+        fecha_boleta = _get_boleta_field(row, "Fecha")
+        estado = _get_boleta_field(row, "Estado")
+        fecha_anulacion = _get_boleta_field(row, "Fecha Anulación", "Fecha Anulacion")
 
         return {
             "folio": folio,
             "tipo_doc": "boleta_honorarios",
-            "rut_proveedor": str(row.get("Rut", "") or row.get("RUT", "")),
+            "rut_proveedor": _get_boleta_field(row, "Rut", "RUT"),
             "razon_social": _find_razon_social(row),
-            "fecha": str(row.get("Fecha", "")),
-            "fecha_recepcion": str(row.get("Estado", "")),
-            "fecha_acuse": str(row.get("Fecha Anulación", "")),
-            "monto_neto": str(row.get("Brutos", "0")),
+            # La planilla mensual del SII trae la fecha de emisión de la
+            # boleta. No existe un "fecha de recepción" separado, así que
+            # reutilizamos la fecha de emisión para que Node muestre algo
+            # coherente en recepcion.fecha_recepcion_humana.
+            "fecha": fecha_boleta,
+            "fecha_recepcion": fecha_boleta,
+            # Solo poblar fecha_acuse si la boleta está anulada (ahí hay fecha real).
+            "fecha_acuse": fecha_anulacion,
+            "estado": estado,
+            "monto_neto": _get_boleta_field(row, "Brutos") or "0",
             "monto_exento": "0",
-            "monto_retencion": str(row.get("Retenido", "0")),
-            "monto_total": str(row.get("Pagado", "0")),
+            "monto_retencion": _get_boleta_field(row, "Retenido") or "0",
+            "monto_total": _get_boleta_field(row, "Pagado") or "0",
         }
     except Exception as exc:
         logger.warning("[CSV-PARSER] Error parseando fila boletas: %s", exc)
@@ -126,16 +145,15 @@ def parse_csv(csv_path: Path, tipo: str) -> List[Dict[str, Any]]:
         return []
 
     try:
-        first_line = fh.readline()
-        fh.seek(0)
-        delimiter = _detect_delimiter(first_line)
-
         if tipo == "boletas":
-            # Boletas: saltar 2 lineas de header extra
-            next(fh, None)
-            next(fh, None)
+            # Boletas tienen 3 líneas de prefijo (info_line, grupos_line, header_line).
+            # IMPORTANTE: detectar delimitador desde la LÍNEA DE HEADERS, no desde
+            # el info_line que es texto libre del título y puede contener cualquier
+            # carácter (';', ':', etc.) y confundir al detector.
+            info_line = fh.readline()  # info
+            grupos_line = fh.readline()  # grupos
             header_line = fh.readline()
-            # Parsear headers con csv.reader para respetar comillas/escapes
+            delimiter = _detect_delimiter(header_line)
             try:
                 headers = [h.strip() for h in next(csv.reader([header_line], delimiter=delimiter))]
             except Exception:
@@ -143,6 +161,9 @@ def parse_csv(csv_path: Path, tipo: str) -> List[Dict[str, Any]]:
             logger.info("[CSV-PARSER] Headers boletas: %s", headers)
             reader = csv.DictReader(fh, delimiter=delimiter, fieldnames=headers)
         else:
+            first_line = fh.readline()
+            fh.seek(0)
+            delimiter = _detect_delimiter(first_line)
             reader = csv.DictReader(fh, delimiter=delimiter)
 
         for row in reader:

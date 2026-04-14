@@ -118,7 +118,7 @@ def format_document_for_node(doc: Dict[str, Any]) -> Dict[str, Any]:
         "recepcion": {
             "fecha_recepcion_humana": format_fecha_humana(doc.get("fecha_recepcion")),
             "fecha_acuse_humana": format_fecha_humana(doc.get("fecha_acuse")),
-            "estado": "",
+            "estado": str(doc.get("estado", "") or ""),
         },
         "emisor": {
             "rut": extract_rut_number(doc.get("rut_proveedor", "")),
