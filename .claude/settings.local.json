@@ -21,7 +21,8 @@
       "Bash(python -m py_compile app/scrapers/boleta.py app/services/csv_parser.py)",
       "Bash(python -c ' *)",
       "Bash(python -m py_compile app/services/csv_parser.py app/scrapers/boleta.py)",
-      "Bash(python -m py_compile app/services/csv_parser.py app/utils/formatters.py app/scrapers/boleta.py)"
+      "Bash(python -m py_compile app/services/csv_parser.py app/utils/formatters.py app/scrapers/boleta.py)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('app/scrapers/boleta.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK sintaxis'\\)\")"
     ]
   }
 }

@@ -1338,59 +1338,112 @@ def _abrir_mensual_y_descargar_paginado(
     header_line: Optional[str] = None
     headers: Optional[List[str]] = None
     filas_combinadas: List[List[str]] = []
+    filas_vistas: Set[Tuple[str, ...]] = set()
     paginas_procesadas = 0
     pdfs_descargados = 0
     fuente_datos = "desconocido"
+    planilla_ok_alguna = False
 
     # ══════════════════════════════════════════════════════════════════
-    # PASO 1 — Descargar la Planilla PRIMERO.
-    #          La planilla del SII es un único archivo que contiene
-    #          TODAS las boletas del mes (todas las páginas). Es la
-    #          fuente completa y autoritativa, y descargarla una sola
-    #          vez es muchísimo más rápido que paginar + scrapear HTML.
+    # PASO 1 — Recorrer todas las páginas descargando la planilla de
+    #          cada una. El SII pagina la planilla (sólo baja las filas
+    #          de la página visible), así que hay que visitar cada una.
+    #          Si descargar_pdfs=True, en el mismo loop bajamos los PDFs
+    #          para evitar paginar dos veces.
     # ══════════════════════════════════════════════════════════════════
-    try:
+    pag_idx = 0
+    while True:
+        pag_idx += 1
+        pagina_actual, total_paginas = obtener_info_paginacion_mensual(page)
+        pagina_log = pagina_actual or pag_idx
         esperar_vista_mensual_lista(page)
-        info_line = _scrape_info_line(page)
-        log("Descargando planilla SII (fuente completa de boletas)...")
-        download = esperar_y_disparar_descarga_planilla(
-            page,
-            retries_click=retries_click,
-            backoff_base_ms=backoff_base_ms,
-            diag_dir=diag_dir,
-        )
-        failure = download.failure()
-        if failure:
-            raise RuntimeError(f"La descarga de la planilla reportó failure: {failure}")
 
-        temp_xls = diag_planillas_dir / "planilla_completa.xls"
+        if info_line is None:
+            try:
+                info_line = _scrape_info_line(page)
+            except Exception:
+                info_line = None
+
+        # ── Descargar y parsear planilla de la página actual ──
         try:
-            temp_xls.unlink(missing_ok=True)
+            log(f"Descargando planilla SII pag {pagina_log}/{total_paginas or '?'}...")
+            download = esperar_y_disparar_descarga_planilla(
+                page,
+                retries_click=retries_click,
+                backoff_base_ms=backoff_base_ms,
+                diag_dir=diag_dir,
+            )
+            failure = download.failure()
+            if failure:
+                raise RuntimeError(f"La descarga de la planilla reportó failure: {failure}")
+
+            temp_xls = diag_planillas_dir / f"planilla_pag_{pag_idx:03d}.xls"
+            try:
+                temp_xls.unlink(missing_ok=True)
+            except Exception:
+                pass
+            download.save_as(temp_xls)
+
+            modo, info_planilla, headers_planilla, filas_planilla = _parsear_planilla_boletas(temp_xls)
+            if headers is None:
+                headers = headers_planilla
+                header_line = ",".join(f'"{h}"' for h in headers)
+            if info_planilla and info_line is None:
+                info_line = info_planilla
+
+            agregadas = 0
+            for fila in filas_planilla:
+                fila_key = tuple(fila)
+                if fila_key in filas_vistas:
+                    continue
+                filas_vistas.add(fila_key)
+                filas_combinadas.append(fila)
+                agregadas += 1
+
+            fuente_datos = f"planilla({modo})"
+            planilla_ok_alguna = True
+            log(
+                f"Planilla pag {pagina_log}/{total_paginas or '?'} parseada: "
+                f"modo={modo}, cols={len(headers or [])}, nuevas={agregadas}, "
+                f"acumuladas={len(filas_combinadas)}"
+            )
+        except Exception as e:
+            log(f"Falló descarga/parseo de planilla pag {pagina_log}: {e}")
+            dump_diagnostico(page, diag_dir, f"planilla_fallback_pag_{pag_idx}")
+
+        # ── Descargar PDFs de la página actual (mismo loop) ──
+        if descargar_pdfs and destino_pdfs is not None:
+            try:
+                enviados_pagina = _descargar_pdfs_boletas_pagina(
+                    page,
+                    destino_pdfs,
+                    session=session,
+                    hostname=hostname,
+                    guardar_local=False,
+                    downloaded_cache=downloaded_cache,
+                )
+            except Exception as e:
+                log(f"Error descargando PDFs en pag {pagina_log}: {e}")
+                enviados_pagina = 0
+            pdfs_descargados += enviados_pagina
+            log(f"PDFs pag {pagina_log}/{total_paginas or '?'}: enviados={enviados_pagina}")
+
+        if not ir_a_pagina_siguiente_mensual(page, retries_click, backoff_base_ms):
+            break
+
+    paginas_procesadas = pag_idx
+
+    # ══════════════════════════════════════════════════════════════════
+    # PASO 2 — Fallback: si la planilla nunca funcionó en ninguna página,
+    #          volver a recorrer scrapeando el HTML de cada página.
+    # ══════════════════════════════════════════════════════════════════
+    if not planilla_ok_alguna or headers is None or not filas_combinadas:
+        log("Planilla no entregó datos, usando fallback: scraping HTML página por página...")
+        try:
+            esperar_vista_mensual_lista(page)
         except Exception:
             pass
-        download.save_as(temp_xls)
 
-        modo, info_planilla, headers_planilla, filas_planilla = _parsear_planilla_boletas(temp_xls)
-        headers = headers_planilla
-        filas_combinadas = filas_planilla
-        header_line = ",".join(f'"{h}"' for h in headers)
-        if info_planilla:
-            info_line = info_planilla
-        fuente_datos = f"planilla({modo})"
-        log(
-            f"Planilla parseada: modo={modo}, cols={len(headers)}, "
-            f"filas={len(filas_combinadas)}, headers={headers}"
-        )
-    except Exception as e:
-        log(f"Falló la descarga/parseo de la planilla, usaré fallback HTML: {e}")
-        dump_diagnostico(page, diag_dir, "planilla_fallback")
-
-    # ══════════════════════════════════════════════════════════════════
-    # PASO 2 — Fallback: si la planilla falló, scrapear página por página.
-    # ══════════════════════════════════════════════════════════════════
-    if headers is None or not filas_combinadas:
-        log("Usando fallback: scraping HTML página por página...")
-        filas_vistas: Set[Tuple[str, ...]] = set()
         pag_fallback = 0
         while True:
             pag_fallback += 1
@@ -1421,45 +1474,7 @@ def _abrir_mensual_y_descargar_paginado(
             if not ir_a_pagina_siguiente_mensual(page, retries_click, backoff_base_ms):
                 break
         fuente_datos = "scraping_html_fallback"
-        paginas_procesadas = pag_fallback
-
-    # ══════════════════════════════════════════════════════════════════
-    # PASO 3 — Si necesitamos descargar PDFs, recorrer todas las páginas
-    #          AHORA (después de tener los datos CSV en mano). Si falla
-    #          la paginación aquí, igual tenemos el CSV completo.
-    # ══════════════════════════════════════════════════════════════════
-    if descargar_pdfs and destino_pdfs is not None:
-        log("Iniciando descarga de PDFs paginada...")
-        try:
-            # Volver a la primera página si es posible — la planilla puede
-            # haber dejado la vista en la última página visitada.
-            esperar_vista_mensual_lista(page)
-        except Exception:
-            pass
-
-        pag_pdf = 0
-        while True:
-            pag_pdf += 1
-            pagina_actual, total_paginas = obtener_info_paginacion_mensual(page)
-            pagina_log = pagina_actual or pag_pdf
-            try:
-                enviados_pagina = _descargar_pdfs_boletas_pagina(
-                    page,
-                    destino_pdfs,
-                    session=session,
-                    hostname=hostname,
-                    guardar_local=False,
-                    downloaded_cache=downloaded_cache,
-                )
-            except Exception as e:
-                log(f"Error descargando PDFs en pag {pagina_log}: {e}")
-                enviados_pagina = 0
-            pdfs_descargados += enviados_pagina
-            log(f"PDFs pag {pagina_log}/{total_paginas or '?'}: enviados={enviados_pagina}")
-
-            if not ir_a_pagina_siguiente_mensual(page, retries_click, backoff_base_ms):
-                break
-        paginas_procesadas = max(paginas_procesadas, pag_pdf)
+        paginas_procesadas = max(paginas_procesadas, pag_fallback)
 
     # Guardar cache de PDFs
     if descargar_pdfs and downloaded_cache is not None:
