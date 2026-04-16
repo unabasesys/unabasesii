@@ -241,22 +241,24 @@ def obtener_info_paginacion_mensual(page) -> Tuple[Optional[int], Optional[int]]
     actual = None
     total = None
 
-    # Estrategia 1: input hidden pagina_solicitada
+    # Estrategia 1: input hidden pagina_actual (refleja la pagina renderizada).
+    # Se prefiere sobre pagina_solicitada porque este ultimo puede haber sido
+    # incrementado por JS antes del submit y no reflejar la pagina actual.
     try:
-        pagina_solicitada = page.locator('input[name="pagina_solicitada"]').first
-        if pagina_solicitada.count() > 0:
-            valor = (pagina_solicitada.input_value() or "").strip()
+        pagina_actual = page.locator('input[name="pagina_actual"]').first
+        if pagina_actual.count() > 0:
+            valor = (pagina_actual.input_value() or "").strip()
             if valor.isdigit():
                 actual = int(valor)
     except Exception:
         pass
 
-    # Estrategia 2: input hidden pagina_actual
+    # Estrategia 2: input hidden pagina_solicitada (fallback)
     if actual is None:
         try:
-            pagina_actual = page.locator('input[name="pagina_actual"]').first
-            if pagina_actual.count() > 0:
-                valor = (pagina_actual.input_value() or "").strip()
+            pagina_solicitada = page.locator('input[name="pagina_solicitada"]').first
+            if pagina_solicitada.count() > 0:
+                valor = (pagina_solicitada.input_value() or "").strip()
                 if valor.isdigit():
                     actual = int(valor)
         except Exception:
