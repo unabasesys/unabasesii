@@ -40,3 +40,8 @@ PDF_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 # ── Timeouts ───────────────────────────────────────────────────────────────
 SCRAPER_TIMEOUT_S: int = 600  # 10 min para cada descarga de CSV
 DEFAULT_TIMEZONE: str = "America/Santiago"
+
+# ── Scheduler de PDFs de compras (proceso aislado) ────────────────────────
+COMPRAS_PDF_INTERVAL_HOURS: float = float(os.getenv("COMPRAS_PDF_INTERVAL_HOURS", "6"))
+COMPRAS_PDF_ENABLED: bool = os.getenv("COMPRAS_PDF_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+LISBOA_API_URL: str = os.getenv("LISBOA_API_URL", "https://lisboa.unabase.com/node/app/sii/list")

@@ -20,6 +20,7 @@ from fastapi.responses import JSONResponse
 from app.core.config import DEBUG, HOST, PORT
 from app.core.logging import setup_logging
 from app.api.sii_router import router as sii_router
+from app.services.compras_pdf_scheduler import start_compras_pdf_scheduler
 
 # Configurar logging antes de todo
 setup_logging(level=logging.DEBUG if DEBUG else logging.INFO)
@@ -43,6 +44,13 @@ app.add_middleware(
 )
 
 app.include_router(sii_router)
+
+
+# ── Startup: iniciar scheduler de PDFs de compras ─────────────────────────
+
+@app.on_event("startup")
+async def _startup():
+    start_compras_pdf_scheduler()
 
 
 # ── Endpoints de salud ──────────────────────────────────────────────────────

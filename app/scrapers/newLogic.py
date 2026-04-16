@@ -1412,17 +1412,6 @@ def download_and_upload_compras_pdfs(
     fecha_desde: Optional[str] = None,
     fecha_hasta: Optional[str] = None,
 ) -> Dict[str, Any]:
-    # --- DESACTIVADO TEMPORALMENTE: descarga de PDF de compras ---
-    logger.info("[COMPRAS-PDF] Logica de descarga de PDF de compras desactivada temporalmente.")
-    return {
-        "status": "disabled",
-        "total": 0,
-        "uploaded": 0,
-        "periodo": {"desde": "", "hasta": ""},
-        "message": "Descarga de PDF de compras desactivada temporalmente.",
-    }
-    # --- FIN DESACTIVADO ---
-
     periodo_desde, periodo_hasta = resolve_periodo_descarga(
         fecha=fecha,
         fecha_desde=fecha_desde,
