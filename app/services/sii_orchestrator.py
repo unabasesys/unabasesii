@@ -257,7 +257,7 @@ async def process_sii_request(request: SiiRequest) -> Dict[str, Any]:
             dv_apoderado=request.dv_apoderado,
             clave_apoderado=request.clave_apoderado,
             headless=True,
-            run_compras_pdfs=compras_ok,
+            run_compras_pdfs=False,
             run_boletas_pdfs=boletas_ok,
         )
         extra_meta["pdf_pipeline"] = pdf_status
