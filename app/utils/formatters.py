@@ -91,19 +91,22 @@ def format_fecha_humana(fecha: Any) -> str:
 
 
 # ── Estado del documento → status ───────────────────────────────────────────
-def estado_a_status(estado: Any) -> str:
-    """Deriva el campo `status` del documento a partir de su estado SII.
+def estado_a_status(estado: Any, recepcion_estado: Any = "") -> str:
+    """Deriva el campo `status` del documento, replicando la lógica de 4D.
 
-    Aplica tanto a boletas (estado "VIGENTE"/"NULA") como a facturas/compras.
-    Un documento anulado/nulo NO debe reportarse como "ok".
+    Equivalente a:
+        If (estado_doc="nula" | estado_doc="nulo"
+            | estado_doc="observado receptor" | recepcion_estado="r")
+            status:=False  → "nula"
+        End if
+    (4D compara strings sin distinguir mayúsculas/minúsculas.)
+    Devuelve "nula" cuando el documento no es válido, "ok" en caso contrario.
+    Aplica tanto a boletas como a facturas/compras.
     """
-    s = str(estado or "").strip().lower()
-    if not s:
-        # Sin estado (caso típico de compras): se asume vigente.
-        return "ok"
-    # "NULA", "NULO", "ANUL", "ANULADA", "ANULADO" → anulada
-    if "anul" in s or s.startswith("nul"):
-        return "anulada"
+    e = str(estado or "").strip().lower()
+    r = str(recepcion_estado or "").strip().lower()
+    if e in ("nula", "nulo", "observado receptor") or r == "r":
+        return "nula"
     return "ok"
 
 
@@ -154,7 +157,7 @@ def format_document_for_node(doc: Dict[str, Any]) -> Dict[str, Any]:
         "descripcion": [],
         "pdf": None,
         "xml": None,
-        "status": estado_a_status(doc.get("estado", "")),
+        "status": estado_a_status(doc.get("estado", ""), doc.get("recepcion_estado", "")),
         "pagado": False,
     }
 
