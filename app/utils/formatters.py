@@ -90,6 +90,23 @@ def format_fecha_humana(fecha: Any) -> str:
     return s if " " in s else f"{s} 00:00:00"
 
 
+# ── Estado del documento → status ───────────────────────────────────────────
+def estado_a_status(estado: Any) -> str:
+    """Deriva el campo `status` del documento a partir de su estado SII.
+
+    Aplica tanto a boletas (estado "VIGENTE"/"NULA") como a facturas/compras.
+    Un documento anulado/nulo NO debe reportarse como "ok".
+    """
+    s = str(estado or "").strip().lower()
+    if not s:
+        # Sin estado (caso típico de compras): se asume vigente.
+        return "ok"
+    # "NULA", "NULO", "ANUL", "ANULADA", "ANULADO" → anulada
+    if "anul" in s or s.startswith("nul"):
+        return "anulada"
+    return "ok"
+
+
 # ── Formateo de un documento individual ─────────────────────────────────────
 def format_document_for_node(doc: Dict[str, Any]) -> Dict[str, Any]:
     from app.utils.rut import extract_rut_number, extract_rut_dv
@@ -137,7 +154,7 @@ def format_document_for_node(doc: Dict[str, Any]) -> Dict[str, Any]:
         "descripcion": [],
         "pdf": None,
         "xml": None,
-        "status": "ok",
+        "status": estado_a_status(doc.get("estado", "")),
         "pagado": False,
     }
 
